@@ -25,20 +25,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install --upgrade yt-dlp
+          pip install --upgrade yt-dlp pyinstaller
 
       - name: 准备 ffmpeg
         run: |
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ff.zip
-          Expand-Archive ff.zip -DestinationPath ffsrc
+          Expand-Archive ff.zip -DestinationPath ffsrc -Force
           $exe = Get-ChildItem -Recurse ffsrc -Filter ffmpeg.exe | Select-Object -First 1
           Copy-Item $exe.FullName .\ffmpeg.exe
-          .\ffmpeg.exe -version | Select-Object -First 1
+          .\ffmpeg.exe -version
 
       - name: 打包 exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed --name "视频下载器" ^
-            --collect-all yt_dlp --add-binary "ffmpeg.exe;." vd_desktop.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name "VideoDownloader" --collect-all yt_dlp --add-binary "ffmpeg.exe;." vd_desktop.py
+          Rename-Item -Path dist\VideoDownloader.exe -NewName "视频下载器.exe"
           dir dist
 
       - name: 上传构建产物
