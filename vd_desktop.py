@@ -13,6 +13,7 @@ Cangora 制作
 import os
 import re
 import sys
+import time
 import json
 import queue
 import threading
@@ -22,7 +23,17 @@ from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
 APP_VER = "1.1.0"
+APP_VC = 2
+UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
+UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
+
+THIS_VERSION_NOTES = (
+    "1. 画质三档：最高画质（不限分辨率）/ 1080p / 720p\n"
+    "2. 新增 Cookie 支持（Chrome / Edge / Firefox 或 cookies.txt），修复抖音 Cookie 报错\n"
+    "3. 新增自动更新：启动静默检查，有新版显示本次更新内容，一键更新后自动重启\n"
+    "4. 顶部「更新日志」只显示当前版本的更新内容"
+)
 
 BG = "#0d1117"
 CARD = "#161b22"
@@ -116,6 +127,7 @@ class Task(object):
 
 class App(object):
     def __init__(self):
+        self._silent_check = True
         self.cfg = load_config()
         self.outdir = self.cfg.get("outdir") or default_dir()
         self.quality = self.cfg.get("quality") or "最高画质"
@@ -161,8 +173,19 @@ class App(object):
                  font=("Microsoft YaHei UI", 20, "bold")).pack(side="left")
         tk.Label(head, text="  电脑版 · 本地运行 · 可自定义保存目录", bg=BG, fg=SUB,
                  font=("Microsoft YaHei UI", 10)).pack(side="left", pady=(8, 0))
-        tk.Label(head, text="v" + APP_VER, bg=BG, fg=SUB,
-                 font=("Microsoft YaHei UI", 9)).pack(side="right", pady=(8, 0))
+        self.notes_btn = tk.Button(head, text="更新日志", command=self.show_notes,
+                                   bg=CARD, fg=FG, bd=0, font=("Microsoft YaHei UI", 9),
+                                   width=9, height=1, cursor="hand2",
+                                   activebackground="#21262d", activeforeground=FG)
+        self.notes_btn.pack(side="right", padx=(6, 0), pady=(6, 0))
+        self.upd_btn = tk.Button(head, text="检查更新", command=self.check_update_ui,
+                                 bg=CARD, fg=FG, bd=0, font=("Microsoft YaHei UI", 9),
+                                 width=9, height=1, cursor="hand2",
+                                 activebackground="#21262d", activeforeground=FG)
+        self.upd_btn.pack(side="right", padx=(8, 0), pady=(6, 0))
+        self.ver_lbl = tk.Label(head, text="v" + APP_VER, bg=BG, fg=SUB,
+                                font=("Microsoft YaHei UI", 9))
+        self.ver_lbl.pack(side="right", pady=(8, 0))
 
         # 保存目录行
         row = tk.Frame(self.root, bg=BG)
@@ -244,6 +267,9 @@ class App(object):
         foot.pack(pady=(0, 12))
 
         self.logline("就绪 · ffmpeg: " + (find_ffmpeg() or "未找到（部分站点需要它来合并音视频）"))
+        self._cleanup_old()
+        if getattr(sys, "frozen", False):
+            self.root.after(1500, lambda: self.check_update(silent=True))
 
     def btn(self, parent, text, cmd, primary=True, width=10):
         bg = BLUE if primary else CARD
@@ -290,6 +316,96 @@ class App(object):
             save_config(self.cfg)
             self.ck_hint.config(text=self.cookie_hint_text())
             self.logline("Cookie 文件: " + p)
+
+    def show_notes(self):
+        messagebox.showinfo("更新日志", "版本 %s 更新内容\n\n%s" % (APP_VER, THIS_VERSION_NOTES))
+
+    # ---------- 自动更新 ----------
+    def _cleanup_old(self):
+        try:
+            old = (sys.executable if getattr(sys, "frozen", False) else "") + ".old"
+            if old and os.path.exists(old):
+                os.remove(old)
+        except Exception:
+            pass
+
+    def check_update_ui(self):
+        self.check_update(silent=False)
+
+    def check_update(self, silent=True):
+        self._silent_check = silent
+
+        def work():
+            try:
+                import urllib.request
+                url = UPDATE_MANIFEST + "?t=%d" % int(time.time() * 1000)
+                req = urllib.request.Request(url, headers={"User-Agent": "VDDesktop/%s" % APP_VER})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    info = json.loads(r.read().decode("utf-8", "ignore"))
+                vc = int(info.get("versionCode") or 0)
+                name = info.get("versionName") or ""
+                changes = info.get("changes") or info.get("note") or ""
+                if vc > APP_VC:
+                    self.events.put(("update", vc, name, changes))
+                else:
+                    self.events.put(("uptodate", name or APP_VER))
+            except Exception as e:
+                self.events.put(("upfail",))
+        threading.Thread(target=work, daemon=True).start()
+
+    def prompt_update(self, vc, name, changes):
+        msg = ("本次更新内容：\n" + changes) if changes.strip() else ("新版本 %s 已发布" % name)
+        msg += "\n\n点「立即更新」会自动下载新版本、替换当前程序并重新打开。"
+        if messagebox.askyesno("发现新版本 " + name, msg):
+            self.download_update()
+
+    def download_update(self):
+        def work():
+            try:
+                import urllib.request, shutil
+                target_dir = os.path.dirname(sys.executable)
+                tmp = os.path.join(target_dir, "VideoDownloader_new.exe")
+                req = urllib.request.Request(UPDATE_EXE, headers={"User-Agent": "VDDesktop"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    total = int(r.headers.get("Content-Length") or 0)
+                    got = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            buf = r.read(65536)
+                            if not buf:
+                                break
+                            f.write(buf)
+                            got += len(buf)
+                            if total:
+                                pct = int(got * 100 / total)
+                                if pct % 10 == 0:
+                                    self.events.put(("log", "下载新版本 %d%%" % pct))
+                if got < 1024 * 1024:
+                    raise Exception("下载的安装包不完整")
+                self.events.put(("apply", tmp))
+            except Exception as e:
+                self.logline("更新错误，请重试")
+                self.events.put(("upfail",))
+        threading.Thread(target=work, daemon=True).start()
+
+    def apply_update(self, new_exe):
+        cur = sys.executable
+        old = cur + ".old"
+        try:
+            if os.path.exists(old):
+                os.remove(old)
+            os.rename(cur, old)
+            import shutil
+            shutil.copy2(new_exe, cur)
+            try:
+                os.remove(new_exe)
+            except Exception:
+                pass
+            subprocess.Popen([cur], cwd=os.path.dirname(cur), close_fds=True)
+            self.root.destroy()
+            os._exit(0)
+        except Exception as e:
+            self.logline("自更新失败: %s（可手动下载 releases/latest/download/VideoDownloader.exe 覆盖）" % e)
 
     def choose_dir(self):
         d = filedialog.askdirectory(initialdir=self.dir_var.get() or self.outdir, title="选择保存目录")
@@ -482,6 +598,18 @@ class App(object):
                         self.tree.item(iid, values=vals)
                 elif kind == "log":
                     self.logline(ev[1])
+                elif kind == "update":
+                    self.prompt_update(ev[1], ev[2], ev[3])
+                elif kind == "uptodate":
+                    self.upd_btn.config(text="已是最新")
+                    if not self._silent_check:
+                        messagebox.showinfo("检查更新", "已是最新版本 %s" % ev[1])
+                elif kind == "upfail":
+                    self.upd_btn.config(text="检查更新")
+                    if not self._silent_check:
+                        messagebox.showwarning("检查更新", "更新错误，请重试")
+                elif kind == "apply":
+                    self.apply_update(ev[1])
                 elif kind == "done":
                     self.busy = False
                     self.logline("全部结束 · 文件在 " + self.outdir)
