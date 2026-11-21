@@ -21,7 +21,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.0.0"
+APP_VER = "1.1.0"
 AUTHOR = "Cangora 制作"
 
 BG = "#0d1117"
@@ -118,7 +118,9 @@ class App(object):
     def __init__(self):
         self.cfg = load_config()
         self.outdir = self.cfg.get("outdir") or default_dir()
-        self.quality = self.cfg.get("quality") or "最佳"
+        self.quality = self.cfg.get("quality") or "最高画质"
+        self.cookie_browser = self.cfg.get("cookie_browser") or "不使用"
+        self.cookiefile = self.cfg.get("cookiefile") or ""
         self.tasks = []
         self.jobs = queue.Queue()
         self.events = queue.Queue()
@@ -193,9 +195,22 @@ class App(object):
         self.btn(bar, "开始下载", self.start, primary=True, width=12)
         self.btn(bar, "清空", self.clear, primary=False, width=8)
         tk.Label(bar, text="画质", bg=BG, fg=FG, font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(16, 6))
-        self.q_cb = ttk.Combobox(bar, values=["最佳", "720p"], width=8, state="readonly")
+        self.q_cb = ttk.Combobox(bar, values=["最高画质", "1080p", "720p"], width=9, state="readonly")
         self.q_cb.set(self.quality)
         self.q_cb.pack(side="left")
+
+        tk.Label(bar, text="Cookie", bg=BG, fg=FG,
+                 font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(16, 6))
+        self.ck_cb = ttk.Combobox(bar, values=["不使用", "Chrome", "Edge", "Firefox"],
+                                  width=9, state="readonly")
+        self.ck_cb.set(self.cookie_browser)
+        self.ck_cb.pack(side="left")
+        self.ck_cb.bind("<<ComboboxSelected>>", lambda e: self.on_cookie_change())
+        self.btn(bar, "cookies.txt", self.choose_cookies_file, primary=False, width=10)
+
+        self.ck_hint = tk.Label(self.root, text=self.cookie_hint_text(), bg=BG, fg=SUB,
+                                font=("Microsoft YaHei UI", 8), anchor="w")
+        self.ck_hint.pack(fill="x", padx=18, pady=(0, 4))
 
         # 任务表
         mid = tk.Frame(self.root, bg=BG)
@@ -247,6 +262,34 @@ class App(object):
 
     def set_status(self, idx, status, progress=None):
         self.events.put(("row", idx, status, progress))
+
+    def cookie_hint_text(self):
+        if self.cookiefile:
+            return "Cookie 文件: " + self.cookiefile
+        if self.cookie_browser != "不使用":
+            return ("用 %s 的 Cookie（抖音/小红书等需要）。若报 Cookie 读取失败，"
+                    "请先完全关闭 %s 再点下载。" % (self.cookie_browser, self.cookie_browser))
+        return "抖音、小红书、Instagram 等站点现在需要 Cookie，选一个浏览器或 cookies.txt"
+
+    def on_cookie_change(self):
+        self.cookie_browser = self.ck_cb.get()
+        self.cfg["cookie_browser"] = self.cookie_browser
+        if self.cookie_browser != "不使用":
+            self.cookiefile = ""
+            self.cfg["cookiefile"] = ""
+        save_config(self.cfg)
+        self.ck_hint.config(text=self.cookie_hint_text())
+        self.logline("Cookie 来源: " + self.cookie_browser)
+
+    def choose_cookies_file(self):
+        p = filedialog.askopenfilename(title="选择 cookies.txt",
+                                       filetypes=[("Cookie 文件", "*.txt"), ("所有文件", "*.*")])
+        if p:
+            self.cookiefile = p
+            self.cfg["cookiefile"] = p
+            save_config(self.cfg)
+            self.ck_hint.config(text=self.cookie_hint_text())
+            self.logline("Cookie 文件: " + p)
 
     def choose_dir(self):
         d = filedialog.askdirectory(initialdir=self.dir_var.get() or self.outdir, title="选择保存目录")
@@ -334,6 +377,15 @@ class App(object):
             threading.Thread(target=self._worker, daemon=True).start()
         self.logline("开始下载 %d 条 → %s" % (len(urls), outdir))
 
+    @staticmethod
+    def _format_for(quality):
+        """按画质选格式：最高不限，1080p/720p 显式限高，优先视频流+音频流再回退单文件"""
+        if quality == "1080p":
+            return "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
+        if quality == "720p":
+            return "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
+        return "bv*+ba/b"
+
     def _worker(self):
         try:
             from yt_dlp import YoutubeDL
@@ -360,8 +412,7 @@ class App(object):
                 elif d.get("status") == "finished":
                     self.set_status(idx, "处理中", 1.0)
 
-            fmt = ("bv*+ba/b" if self.quality == "最佳"
-                   else "b[height<=720]/bv*[height<=720]+ba/b")
+            fmt = self._format_for(self.quality)
             opts = {
                 "outtmpl": os.path.join(self.outdir, "%(title).120B [%(id)s].%(ext)s"),
                 "format": fmt,
@@ -374,8 +425,13 @@ class App(object):
                 "fragment_retries": 10,
                 "concurrent_fragment_downloads": 4,
             }
+            opts["format_sort"] = ["res", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"]
             if ff:
                 opts["ffmpeg_location"] = ff
+            if self.cookiefile and os.path.isfile(self.cookiefile):
+                opts["cookiefile"] = self.cookiefile
+            elif self.cookie_browser and self.cookie_browser != "不使用":
+                opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
 
             try:
                 self.set_status(idx, "解析中", 0.0)
@@ -391,6 +447,10 @@ class App(object):
                 msg = str(e).splitlines()[0][:120] if str(e) else "未知错误"
                 self.set_status(idx, "失败: " + msg, 0.0)
                 self.events.put(("log", "✗ %s → %s" % (task.url, msg)))
+                low = msg.lower()
+                if "cookie" in low:
+                    self.events.put(("log", "  提示：这个站点要 Cookie。把上方 Cookie 选成 Chrome/Edge，"
+                                            "或导出一份 cookies.txt；选浏览器时记得先把浏览器完全关掉再点下载。"))
 
     def _worker_done(self):
         self.workers_left -= 1
