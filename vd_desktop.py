@@ -22,16 +22,16 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.2.0"
-APP_VC = 3
+APP_VER = "1.3.0"
+APP_VC = 4
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 新增「扫码登录」：点一下自动打开抖音网页，扫码或登录后直接读取浏览器 Cookie，不用再自己提取\n"
-    "2. 自动识别默认浏览器（Chrome / Edge / Firefox），无需手动选\n"
-    "3. 抖音报 Cookie 错时自动提示先去登录，不再是一串英文\n"
+    "1. 扫码登录改用独立临时配置的 Edge/Chrome：不碰你平时用的浏览器，登录完自动关掉，读取 Cookie 不再被「数据库被占用」拦住\n"
+    "2. 登录过就记住，下次不用再扫\n"
+    "3. 找不到 Edge 时自动用 Chrome，都没有就退回你已装的浏览器\n"
     "4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义，自动更新照旧"
 )
 
@@ -146,6 +146,31 @@ def detect_default_browser():
     return None
 
 
+def find_browser_exe(browser):
+    """找 Edge / Chrome 的 exe 路径"""
+    if sys.platform != "win32":
+        return None
+    cands = []
+    if browser == "Edge":
+        cands = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+    elif browser == "Chrome":
+        cands = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def login_profile_dir(browser):
+    return os.path.join(app_dir(), "login_" + browser.lower())
+
+
 class App(object):
     def __init__(self):
         self._silent_check = True
@@ -153,6 +178,8 @@ class App(object):
         self.outdir = self.cfg.get("outdir") or default_dir()
         self.quality = self.cfg.get("quality") or "最高画质"
         self.cookie_browser = self.cfg.get("cookie_browser") or "不使用"
+        self.cookie_profile = self.cfg.get("cookie_profile") or ""
+        self._login_proc = None
         self.cookiefile = self.cfg.get("cookiefile") or ""
         self.tasks = []
         self.jobs = queue.Queue()
@@ -314,9 +341,10 @@ class App(object):
     def cookie_hint_text(self):
         if self.cookiefile:
             return "Cookie 文件: " + self.cookiefile
+        if self.cookie_profile and os.path.isdir(self.cookie_profile):
+            return "已登录（%s），Cookie 会自动读取" % self.cookie_browser
         if self.cookie_browser != "不使用":
-            return ("用 %s 的 Cookie（抖音/小红书等需要）。若报 Cookie 读取失败，"
-                    "请先完全关闭 %s 再点下载。" % (self.cookie_browser, self.cookie_browser))
+            return "点「扫码登录」用 %s 登录一次抖音，之后自动读取 Cookie" % self.cookie_browser
         return "抖音、小红书、Instagram 等站点现在需要 Cookie，选一个浏览器或 cookies.txt"
 
     def on_cookie_change(self):
@@ -340,31 +368,83 @@ class App(object):
             self.logline("Cookie 文件: " + p)
 
     def douyin_login(self):
-        """打开抖音网页让用户扫码/登录，之后自动读取该浏览器 Cookie"""
-        import webbrowser
-        browser = self.cookie_browser if self.cookie_browser != "不使用" else (detect_default_browser() or "Chrome")
+        """用独立临时配置的浏览器打开抖音登录，登录完关掉它再读 Cookie"""
+        browser = self.cookie_browser if self.cookie_browser != "不使用" else (detect_default_browser() or "Edge")
+        exe = find_browser_exe(browser)
+        if exe is None:
+            browser = "Chrome" if browser == "Edge" else "Edge"
+            exe = find_browser_exe(browser)
         self.cookie_browser = browser
         self.ck_cb.set(browser)
         self.cfg["cookie_browser"] = browser
         save_config(self.cfg)
-        self.ck_hint.config(text=self.cookie_hint_text())
-        try:
+
+        if exe is None:
+            # 找不到 Edge/Chrome，退回系统默认浏览器（需用户自己关
+            import webbrowser
             webbrowser.open("https://www.douyin.com/")
-        except Exception:
-            self.logline("打不开浏览器，请手动访问 douyin.com")
+            self.logline("没找到 Edge/Chrome，已用系统浏览器打开 douyin.com")
+            messagebox.showinfo("登录抖音", "请在浏览器里扫码登录抖音，登录后完全关闭浏览器，\n"
+                                          "再点「cookies.txt」选择导出文件，或把 Cookie 选成该浏览器。")
             return
-        self.logline("已打开抖音网页（浏览器：%s）" % browser)
+
+        prof = login_profile_dir(browser)
+        try:
+            os.makedirs(prof, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            if self._login_proc is not None and self._login_proc.poll() is None:
+                self._kill_login()
+            self._login_proc = subprocess.Popen(
+                [exe, "--user-data-dir=" + prof, "--no-first-run",
+                 "--no-default-browser-check", "https://www.douyin.com/"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.logline("已用独立的 %s 打开抖音登录页（不影响你平时的浏览器）" % browser)
+        except Exception as e:
+            self.logline("打不开浏览器: %s" % e)
+            return
+
         ans = messagebox.askokcancel(
             "扫码登录抖音",
-            "1. 在弹出的浏览器里扫码或登录抖音（登录一次即可）\n"
-            "2. 看到首页/推荐视频就说明登录成功\n"
-            "3. 请把这个浏览器完全关闭，再点「确定」\n\n"
-            "关闭浏览器是为了能读取它的 Cookie；不关闭可能读取失败。")
+            "1. 在弹出的窗口里扫码或登录抖音（只需登录一次）\n"
+            "2. 看到推荐视频就说明登录成功\n"
+            "3. 点「确定」后我会自动关掉这个窗口并读取 Cookie\n\n"
+            "这个窗口用的是独立配置，不会动你平时浏览器的账号和数据。")
         if not ans:
-            self.logline("已取消，登录后仍可点「扫码登录」再继续")
+            self.logline("已取消，登录后仍可再点「扫码登录」")
+            self._kill_login()
             return
-        self.logline("登录完成，Cookie 将自动从 %s 读取，直接点「开始下载」" % browser)
-        self.ck_hint.config(text="已登录（%s），直接开始下载即可" % browser)
+        self._kill_login()
+        dflt = os.path.join(prof, "Default")
+        self.cookie_profile = dflt if os.path.isdir(dflt) else prof
+        self.cfg["cookie_profile"] = self.cookie_profile
+        self.cfg["cookiefile"] = ""
+        self.cookiefile = ""
+        save_config(self.cfg)
+        self.ck_hint.config(text=self.cookie_hint_text())
+        self.logline("登录完成，Cookie 将从独立配置读取，直接点「开始下载」")
+
+    def _kill_login(self):
+        p = self._login_proc
+        self._login_proc = None
+        if p is None or p.poll() is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                p.terminate()
+        except Exception:
+            try:
+                p.terminate()
+            except Exception:
+                return
+        try:
+            p.wait(timeout=8)
+        except Exception:
+            pass
 
     def show_notes(self):
         messagebox.showinfo("更新日志", "版本 %s 更新内容\n\n%s" % (APP_VER, THIS_VERSION_NOTES))
@@ -595,6 +675,8 @@ class App(object):
                 opts["ffmpeg_location"] = ff
             if self.cookiefile and os.path.isfile(self.cookiefile):
                 opts["cookiefile"] = self.cookiefile
+            elif self.cookie_profile and os.path.isdir(self.cookie_profile):
+                opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), self.cookie_profile, None, None)
             elif self.cookie_browser and self.cookie_browser != "不使用":
                 opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
 
