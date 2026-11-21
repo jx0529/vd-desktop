@@ -1,0 +1,1 @@
+{"versionCode":3,"versionName":"1.2.0","changes":"1. 新增「扫码登录」：点一下自动打开抖音网页，扫码或登录后直接读取浏览器 Cookie，不用再自己提取\n2. 自动识别默认浏览器（Chrome / Edge / Firefox），无需手动选\n3. 抖音报 Cookie 错时自动提示先去登录，不再是一串英文\n4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义，自动更新照旧","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
