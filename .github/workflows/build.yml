@@ -1,0 +1,59 @@
+name: build-windows-exe
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v4
+
+      - name: 装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --upgrade yt-dlp
+
+      - name: 准备 ffmpeg
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ff.zip
+          Expand-Archive ff.zip -DestinationPath ffsrc
+          $exe = Get-ChildItem -Recurse ffsrc -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName .\ffmpeg.exe
+          .\ffmpeg.exe -version | Select-Object -First 1
+
+      - name: 打包 exe
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name "视频下载器" ^
+            --collect-all yt_dlp --add-binary "ffmpeg.exe;." vd_desktop.py
+          dir dist
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/视频下载器.exe
+
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/视频下载器.exe
+          name: ${{ github.ref_name }}
+          body: |
+            视频下载器 · 电脑版，可自定义保存目录，粘贴分享文案自动识别链接并批量下载。
+            Cangora 制作
+          fail_on_unmatched_files: true
