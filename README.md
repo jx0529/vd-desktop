@@ -7,7 +7,7 @@ Windows 单文件 exe，内置 yt-dlp 与 ffmpeg，双击即可用，不需要�
 
 ## 下载
 
-到 Releases 页面下载 `视频下载器.exe`（每次发版自动构建，最新版总在 Latest）。
+到 Releases 页面下载 `VideoDownloader.exe`（每次发版自动构建，最新版总在 Latest）。
 
 ## 功能
 
@@ -24,10 +24,10 @@ Windows 单文件 exe，内置 yt-dlp 与 ffmpeg，双击即可用，不需要�
 ```bash
 pip install -r requirements.txt
 pip install --upgrade yt-dlp
-pyinstaller --noconfirm --onefile --windowed --name "视频下载器" --collect-all yt_dlp vd_desktop.py
+pyinstaller --noconfirm --onefile --windowed --name "VideoDownloader" --collect-all yt_dlp vd_desktop.py
 ```
 
-产物在 `dist/视频下载器.exe`。想要音视频合并，把 `ffmpeg.exe` 放在 exe 同目录（程序会优先用同目录的 ffmpeg）。
+产物在 `dist/VideoDownloader.exe`。想要音视频合并，把 `ffmpeg.exe` 放在 exe 同目录（程序会优先用同目录的 ffmpeg）。
 
 不打包直接跑源码：`python vd_desktop.py`
 
