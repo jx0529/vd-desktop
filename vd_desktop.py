@@ -22,17 +22,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.1.0"
-APP_VC = 2
+APP_VER = "1.2.0"
+APP_VC = 3
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 画质三档：最高画质（不限分辨率）/ 1080p / 720p\n"
-    "2. 新增 Cookie 支持（Chrome / Edge / Firefox 或 cookies.txt），修复抖音 Cookie 报错\n"
-    "3. 新增自动更新：启动静默检查，有新版显示本次更新内容，一键更新后自动重启\n"
-    "4. 顶部「更新日志」只显示当前版本的更新内容"
+    "1. 新增「扫码登录」：点一下自动打开抖音网页，扫码或登录后直接读取浏览器 Cookie，不用再自己提取\n"
+    "2. 自动识别默认浏览器（Chrome / Edge / Firefox），无需手动选\n"
+    "3. 抖音报 Cookie 错时自动提示先去登录，不再是一串英文\n"
+    "4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义，自动更新照旧"
 )
 
 BG = "#0d1117"
@@ -123,6 +123,27 @@ class Task(object):
         self.duration = ""
         self.status = "等待"
         self.progress = 0.0
+
+
+def detect_default_browser():
+    """猜测系统默认浏览器，返回 Chrome / Edge / Firefox / None"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        key = (r"Software\Microsoft\Windows\Shell\Associations"
+               r"\UrlAssociations\https\UserChoice")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            prog = winreg.QueryValueEx(k, "ProgId")[0].lower()
+        if "chrome" in prog:
+            return "Chrome"
+        if "edge" in prog or "msedge" in prog:
+            return "Edge"
+        if "firefox" in prog:
+            return "Firefox"
+    except Exception:
+        pass
+    return None
 
 
 class App(object):
@@ -229,6 +250,7 @@ class App(object):
         self.ck_cb.set(self.cookie_browser)
         self.ck_cb.pack(side="left")
         self.ck_cb.bind("<<ComboboxSelected>>", lambda e: self.on_cookie_change())
+        self.btn(bar, "扫码登录", self.douyin_login, primary=True, width=9)
         self.btn(bar, "cookies.txt", self.choose_cookies_file, primary=False, width=10)
 
         self.ck_hint = tk.Label(self.root, text=self.cookie_hint_text(), bg=BG, fg=SUB,
@@ -316,6 +338,33 @@ class App(object):
             save_config(self.cfg)
             self.ck_hint.config(text=self.cookie_hint_text())
             self.logline("Cookie 文件: " + p)
+
+    def douyin_login(self):
+        """打开抖音网页让用户扫码/登录，之后自动读取该浏览器 Cookie"""
+        import webbrowser
+        browser = self.cookie_browser if self.cookie_browser != "不使用" else (detect_default_browser() or "Chrome")
+        self.cookie_browser = browser
+        self.ck_cb.set(browser)
+        self.cfg["cookie_browser"] = browser
+        save_config(self.cfg)
+        self.ck_hint.config(text=self.cookie_hint_text())
+        try:
+            webbrowser.open("https://www.douyin.com/")
+        except Exception:
+            self.logline("打不开浏览器，请手动访问 douyin.com")
+            return
+        self.logline("已打开抖音网页（浏览器：%s）" % browser)
+        ans = messagebox.askokcancel(
+            "扫码登录抖音",
+            "1. 在弹出的浏览器里扫码或登录抖音（登录一次即可）\n"
+            "2. 看到首页/推荐视频就说明登录成功\n"
+            "3. 请把这个浏览器完全关闭，再点「确定」\n\n"
+            "关闭浏览器是为了能读取它的 Cookie；不关闭可能读取失败。")
+        if not ans:
+            self.logline("已取消，登录后仍可点「扫码登录」再继续")
+            return
+        self.logline("登录完成，Cookie 将自动从 %s 读取，直接点「开始下载」" % browser)
+        self.ck_hint.config(text="已登录（%s），直接开始下载即可" % browser)
 
     def show_notes(self):
         messagebox.showinfo("更新日志", "版本 %s 更新内容\n\n%s" % (APP_VER, THIS_VERSION_NOTES))
@@ -565,7 +614,7 @@ class App(object):
                 self.events.put(("log", "✗ %s → %s" % (task.url, msg)))
                 low = msg.lower()
                 if "cookie" in low:
-                    self.events.put(("log", "  提示：这个站点要 Cookie。把上方 Cookie 选成 Chrome/Edge，"
+                    self.events.put(("log", "  提示：抖音/小红书需要登录。点顶部「扫码登录」登录一次即可，"
                                             "或导出一份 cookies.txt；选浏览器时记得先把浏览器完全关掉再点下载。"))
 
     def _worker_done(self):
