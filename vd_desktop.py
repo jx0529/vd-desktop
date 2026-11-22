@@ -22,17 +22,18 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.8.0"
-APP_VC = 9
+APP_VER = "1.9.0"
+APP_VC = 10
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
+APP_EXE_NAME = "视频下载器.exe"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 登录配置改到用户数据目录，更新时不会再丢登录态\n"
-    "2. 抖音识别加多重兜底（无头/窗口两种方式、自动换端口、清锁文件）\n"
-    "3. 识别失败会把原因写进界面日志，并生成 vd_log.txt 方便排查\n"
-    "4. 下载进度、更新进度都能看到百分比"
+    "1. 修复自动更新进度条一直 0% 的问题，现在显示百分比和已下载大小\n"
+    "2. 抖音分享短链能自动跟到视频，识别出标题、作者、时长、点赞\n"
+    "3. 登录配置放在用户数据目录，更新时不会丢登录态\n"
+    "4. 识别失败会把原因写进 vd_log.txt"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -562,7 +563,10 @@ def cleanup_leftovers():
     cur = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else None
     if not cur:
         return
-    for p in (cur + ".old", cur + ".bak", os.path.join(os.path.dirname(cur), "VideoDownloader_new.exe")):
+    for p in (cur + ".old", cur + ".bak",
+              os.path.join(os.path.dirname(cur), "_更新包.exe"),
+              os.path.join(os.path.dirname(cur), "VideoDownloader_new.exe")):
+
         try:
             if os.path.exists(p):
                 os.remove(p)
@@ -1101,9 +1105,24 @@ class App(object):
 
     def show_upd_progress(self):
         """更新下载进度窗口：进度条 + 百分比"""
+        stale = getattr(self, "_updwin", None)
+        alive = False
         try:
-            if getattr(self, "_updwin", None) is not None:
-                return
+            alive = stale is not None and bool(stale.winfo_exists())
+        except Exception:
+            alive = False
+        if alive:
+            try:
+                self._updbar["value"] = 0
+                self._updlbl.config(text="0%")
+                stale.lift()
+            except Exception:
+                pass
+            return
+        self._updwin = None
+        self._updbar = None
+        self._updlbl = None
+        try:
             top = tk.Toplevel(self.root)
             self._updwin = top
             top.title("正在下载新版本")
@@ -1140,14 +1159,30 @@ class App(object):
         def work():
             import urllib.request
             target_dir = os.path.dirname(sys.executable)
-            tmp = os.path.join(target_dir, "VideoDownloader_new.exe")
+            tmp = os.path.join(target_dir, "_更新包.exe")
             last = None
             for attempt in range(3):
                 try:
+                    total = 0
+                    try:
+                        rq = urllib.request.Request(UPDATE_EXE,
+                                                    headers={"User-Agent": "VDDesktop",
+                                                             "Range": "bytes=0-0"})
+                        with urllib.request.urlopen(rq, timeout=30) as r0:
+                            cr = r0.headers.get("Content-Range") or ""
+                            m = re.search(r'/(\d+)$', cr)
+                            if m:
+                                total = int(m.group(1))
+                            else:
+                                total = int(r0.headers.get("Content-Length") or 0)
+                    except Exception:
+                        pass
                     req = urllib.request.Request(UPDATE_EXE, headers={"User-Agent": "VDDesktop"})
                     with urllib.request.urlopen(req, timeout=60) as r:
-                        total = int(r.headers.get("Content-Length") or 0)
+                        if not total:
+                            total = int(r.headers.get("Content-Length") or 0)
                         got = 0
+                        last_put = 0.0
                         with open(tmp, "wb") as f:
                             while True:
                                 buf = r.read(65536)
@@ -1155,8 +1190,14 @@ class App(object):
                                     break
                                 f.write(buf)
                                 got += len(buf)
-                                if total:
-                                    self.events.put(("updprog", int(got * 100 / total)))
+                                now = time.time()
+                                if now - last_put > 0.25:
+                                    last_put = now
+                                    if total:
+                                        self.events.put(("updprog", min(99, int(got * 100.0 / total)),
+                                                         "%.1f / %.1f MB" % (got / 1048576.0, total / 1048576.0)))
+                                    else:
+                                        self.events.put(("updprog", 0, "已下载 %.1f MB" % (got / 1048576.0)))
                     if got < 1024 * 1024:
                         raise Exception("下载的安装包不完整")
                     self.events.put(("apply", tmp))
@@ -1189,7 +1230,7 @@ class App(object):
             self.root.destroy()
             os._exit(0)
         except Exception as e:
-            self.logline("自更新失败: %s（可手动下载 releases/latest/download/VideoDownloader.exe 覆盖）" % e)
+            self.logline("自更新失败: %s（可手动下载最新版覆盖当前程序）" % e)
 
     def choose_dir(self):
         d = filedialog.askdirectory(initialdir=self.dir_var.get() or self.outdir, title="选择保存目录")
@@ -1513,9 +1554,16 @@ class App(object):
                     self.logline(ev[1])
                 elif kind == "updprog":
                     pct = max(0, min(100, int(ev[1])))
+                    txt = "%d%%" % pct
+                    if len(ev) > 2 and ev[2]:
+                        txt = "%d%%  %s" % (pct, ev[2])
+                    bar = getattr(self, "_updbar", None)
+                    lbl = getattr(self, "_updlbl", None)
                     try:
-                        self._updbar["value"] = pct
-                        self._updlbl.config(text="%d%%" % pct)
+                        if bar is not None and bar.winfo_exists():
+                            bar["value"] = pct
+                        if lbl is not None and lbl.winfo_exists():
+                            lbl.config(text=txt)
                     except Exception:
                         pass
                     try:

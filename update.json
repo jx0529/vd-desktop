@@ -1,1 +1,1 @@
-{"versionCode": 9, "versionName": "1.8.0", "changes": "1. 抖音分享短链（v.douyin.com）现在能自动跟到视频，识别出标题、作者、时长、点赞\n2. 浏览器取数据加了多重兜底：自动换端口、清锁文件、无头失败自动换窗口模式\n3. 登录配置改到用户数据目录，更新时不会再丢登录态\n4. 识别失败会把原因写进日志，并生成 vd_log.txt", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{"versionCode": 10, "versionName": "1.9.0", "changes": "1. 自动更新进度条修好了，会显示百分比和已下载大小（此前一直卡 0%）\n2. 抖音分享短链能自动识别到视频，显示标题、作者、时长、点赞\n3. 登录配置移到用户数据目录，更新后不用重新登录\n4. 识别失败会把原因写进程序目录的 vd_log.txt", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
