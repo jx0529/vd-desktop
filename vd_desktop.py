@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.3"
-APP_VC = 13
+APP_VER = "1.9.4"
+APP_VC = 14
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -32,10 +32,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 「扫码登录」修好：会先清掉上次留下的浏览器锁文件，窗口能正常弹出\n"
-    "2. 浏览器启动后自己退掉时会自动换新配置目录、并改用默认浏览器兜底\n"
-    "3. 兼容系统装在非 C 盘、Edge/Chrome 装在别处的电脑\n"
-    "4. 下载的视频仍统一放进「视频下载器」文件夹，桌面不再生成 vd_log.txt"
+    "1. 「扫码登录」只开一个抖音窗口，不再一次冒出好几个\n"
+    "2. 点确定后浏览器是正常关闭的，Cookie 能写进磁盘，登录态才读得到\n"
+    "3. 登录前会校验 Cookie 是否已保存，识别前也不会再多开窗口\n"
+    "4. 修掉登录后仍识别不到标题/作者的问题，下载仍进「视频下载器」文件夹"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -262,6 +262,20 @@ def _clear_profile_locks(prof):
                 dlog("已清理锁文件 " + rel)
         except Exception:
             pass
+
+
+def _cookies_db_path(prof):
+    """Edge/Chrome 的 Cookie 数据库位置（新版在 Default\\Network\\Cookies）"""
+    for rel in (os.path.join("Default", "Network", "Cookies"),
+                os.path.join("Default", "Cookies"),
+                "Network\\Cookies", "Cookies"):
+        p = os.path.join(prof, rel)
+        try:
+            if os.path.isfile(p):
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def _kill_browser_on_profile(prof):
@@ -1033,7 +1047,7 @@ class App(object):
             self.logline("已取消，登录后仍可再点「扫码登录」")
             self._kill_login()
             return
-        self._kill_login()
+        self._close_login_browser()
         dflt = os.path.join(used_prof, "Default")
         self.cookie_profile = dflt if os.path.isdir(dflt) else used_prof
         self.cfg["cookie_profile"] = self.cookie_profile
@@ -1041,34 +1055,60 @@ class App(object):
         self.cookiefile = ""
         save_config(self.cfg)
         self.ck_hint.config(text=self.cookie_hint_text())
-        self.logline("登录完成，Cookie 将从独立配置读取，直接点「开始下载」")
+        ck = _cookies_db_path(used_prof)
+        if ck and os.path.getsize(ck) > 4096:
+            self.logline("登录完成，Cookie 已保存（%s KB），直接点「开始下载」" % (os.path.getsize(ck) // 1024))
+        else:
+            self.logline("登录窗口已关闭，但 Cookie 看起来还没写盘；如果识别失败请再点一次「扫码登录」")
 
     def _spawn_login_browser(self, exe, prof, browser):
-        """启动独立配置的浏览器；被杀/自己退出就清锁换新目录重试，返回 (成功, 实际目录, 退出码)"""
+        """启动唯一的登录窗口（独立配置 + 调试端口，方便优雅关闭让 Cookie 落盘）
+        返回 (成功, 实际目录, 退出码)"""
         code = None
         try:
             os.makedirs(prof, exist_ok=True)
         except Exception:
             pass
-        tries = [(prof, True), (prof, False), (prof + "_2", True), (prof + "_2", False)]
-        for path, clean in tries:
+        # 先把占着这个配置的旧窗口全部关掉，保证只有一个
+        try:
+            if self._login_proc is not None and self._login_proc.poll() is None:
+                self._close_login_browser()
+        except Exception:
+            pass
+        _kill_browser_on_profile(prof)
+        for attempt in range(3):
+            if attempt == 0:
+                _clear_profile_locks(prof)
+            elif attempt == 1:
+                _clear_profile_locks(prof)
+            else:
+                # 目录可能是坏的，整个挪走用干净目录（不新建第二个配置）
+                try:
+                    bak = prof + ".bad"
+                    import shutil
+                    if os.path.isdir(bak):
+                        shutil.rmtree(bak, ignore_errors=True)
+                    if os.path.isdir(prof):
+                        shutil.move(prof, bak)
+                except Exception:
+                    pass
+                try:
+                    os.makedirs(prof, exist_ok=True)
+                except Exception:
+                    pass
+            port = _free_port()
             try:
-                os.makedirs(path, exist_ok=True)
-            except Exception:
-                pass
-            if clean:
-                _clear_profile_locks(path)
-            self._kill_login()
-            try:
-                args = [exe, "--user-data-dir=" + path, "--no-first-run",
+                args = [exe, "--remote-debugging-port=%d" % port,
+                        "--user-data-dir=" + prof, "--no-first-run",
                         "--no-default-browser-check", "--new-window",
                         "https://www.douyin.com/"]
                 proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
-                dlog("启动浏览器失败(%s): %s" % (path, e))
+                dlog("启动浏览器失败(%s): %s" % (prof, e))
                 code = -1
                 continue
             self._login_proc = proc
+            self._login_port = port
             alive = True
             for _ in range(16):  # 等 4 秒看它是不是自己退了
                 time.sleep(0.25)
@@ -1076,22 +1116,63 @@ class App(object):
                     alive = False
                     break
             if alive:
-                return True, path, None
+                return True, prof, None
             code = proc.returncode
-            dlog("浏览器启动后立即退出(退出码 %s, 配置 %s)" % (code, path))
+            dlog("浏览器启动后立即退出(退出码 %s, 配置 %s，第%d次)" % (code, prof, attempt + 1))
             try:
                 proc.wait(timeout=3)
             except Exception:
                 pass
             self._login_proc = None
+            _kill_browser_on_profile(prof)
         return False, prof, code
 
-    def _kill_login(self):
+    def _close_login_browser(self):
+        """优雅关掉登录窗口：先 CDP Browser.close，再兜底 taskkill（不加 /F 先试）"""
+        proc = self._login_proc
+        port = getattr(self, "_login_port", 0)
+        if proc is not None and proc.poll() is None and port:
+            try:
+                import urllib.request
+                with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=3) as r:
+                    ws = json.loads(r.read().decode("utf-8", "replace")).get("webSocketDebuggerUrl")
+                if ws:
+                    sock = cdp_ws_connect(ws)
+                    try:
+                        _ws_send(sock, {"id": 99, "method": "Browser.close"})
+                        for _ in range(20):
+                            time.sleep(0.2)
+                            if proc.poll() is not None:
+                                break
+                    finally:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+                    dlog("已用 CDP 优雅关闭登录窗口")
+            except Exception as e:
+                dlog("CDP 关闭失败: %s" % e)
+            try:
+                if proc.poll() is None:
+                    time.sleep(1.0)
+            except Exception:
+                pass
+        self._kill_login(soft=True)
+
+    def _kill_login(self, soft=False):
         p = self._login_proc
         self._login_proc = None
         if p is None or p.poll() is not None:
             return
         try:
+            if soft and sys.platform == "win32":
+                # 先温和关闭，让浏览器把 Cookie 写进磁盘
+                subprocess.run(["taskkill", "/T", "/PID", str(p.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                for _ in range(25):
+                    if p.poll() is not None:
+                        return
+                    time.sleep(0.2)
             if sys.platform == "win32":
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1429,6 +1510,11 @@ class App(object):
 
     def douyin_resolve(self, url):
         """先用无头浏览器在登录态里取详情，失败返回 None"""
+        try:
+            if getattr(self, "_login_proc", None) is not None and self._login_proc.poll() is None:
+                self._close_login_browser()  # 先关掉登录窗口，避免再多开一个抖音
+        except Exception:
+            pass
         exe, prof = self._douyin_headless_args()
         if not exe:
             return None
