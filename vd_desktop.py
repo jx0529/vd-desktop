@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.11"
-APP_VC = 21
+APP_VER = "1.9.12"
+APP_VC = 22
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -40,7 +40,8 @@ THIS_VERSION_NOTES = (
     "6. 右侧滚动条改成深色，和背景一致，不再突兀\n"
     "7. 启动时预先加载解析组件，运行中不再报 base_library.zip 找不到\n"
     "8. 登录窗口启动前强清占用配置的浏览器进程，减少「退出码 21」\n"
-    "9. 画质 / Cookie 下拉框改成深色，不再出现白色块"
+    "9. 画质 / Cookie 下拉框改成深色，不再出现白色块\n"
+    "10. 更新后重启不再弹「Failed to remove temporary directory」警告"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -929,6 +930,19 @@ def cleanup_leftovers():
         pass
 
 
+def fresh_child_env():
+    """给“重新启动自己”的子进程一份干净环境。
+    不清理 _MEIPASS 的话，新进程会复用旧进程的临时解压目录，
+    旧进程退出时又去删同一个目录，于是弹出
+    「Failed to remove temporary directory」警告，还会把新进程的文件删掉。"""
+    env = os.environ.copy()
+    for k in ("_MEIPASS", "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
+              "_PYI_PARENT_PROCESS_LEVEL", "_PYI_SPLASH_IPC"):
+        env.pop(k, None)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def app_dir():
     """打包成 exe 后取 exe 所在目录，源码运行取脚本目录"""
     if getattr(sys, "frozen", False):
@@ -1772,8 +1786,10 @@ class App(object):
                 os.remove(new_exe)
             except Exception:
                 pass
-            subprocess.Popen([cur], cwd=os.path.dirname(cur), close_fds=True)
+            subprocess.Popen([cur], cwd=os.path.dirname(cur), close_fds=True,
+                             env=fresh_child_env())
             self.root.destroy()
+            time.sleep(1.5)   # 等新进程解压完自己的临时目录再退出，避免旧目录被删
             os._exit(0)
         except Exception as e:
             self.logline("自更新失败: %s（可手动下载最新版覆盖当前程序）" % e)
