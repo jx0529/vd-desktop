@@ -22,17 +22,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.3.0"
-APP_VC = 4
+APP_VER = "1.4.0"
+APP_VC = 5
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 扫码登录改用独立临时配置的 Edge/Chrome：不碰你平时用的浏览器，登录完自动关掉，读取 Cookie 不再被「数据库被占用」拦住\n"
-    "2. 登录过就记住，下次不用再扫\n"
-    "3. 找不到 Edge 时自动用 Chrome，都没有就退回你已装的浏览器\n"
-    "4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义，自动更新照旧"
+    "1. 更新提示窗口改成「立即更新 / 稍后」两个按钮，界面统一，不再出现「是 / 否」\n"
+    "2. 更新内容按行分段显示，长文案也不会挤在一起\n"
+    "3. 下载进度写在运行日志里，替换后自动重开\n"
+    "4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义"
 )
 
 BG = "#0d1117"
@@ -287,11 +287,11 @@ class App(object):
         # 任务表
         mid = tk.Frame(self.root, bg=BG)
         mid.pack(fill="both", expand=True, padx=18, pady=(4, 6))
-        cols = ("no", "title", "dur", "status", "bar")
+        cols = ("no", "title", "author", "dur", "status", "bar")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", height=8)
-        for c, t, w, a in (("no", "序号", 50, "center"), ("title", "标题", 430, "w"),
-                           ("dur", "时长", 70, "center"), ("status", "状态", 150, "w"),
-                           ("bar", "进度", 150, "w")):
+        for c, t, w, a in (("no", "序号", 45, "center"), ("title", "标题", 330, "w"),
+                           ("author", "作者", 110, "w"), ("dur", "时长", 65, "center"),
+                           ("status", "状态", 150, "w"), ("bar", "进度", 105, "w")):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
@@ -483,10 +483,47 @@ class App(object):
         threading.Thread(target=work, daemon=True).start()
 
     def prompt_update(self, vc, name, changes):
-        msg = ("本次更新内容：\n" + changes) if changes.strip() else ("新版本 %s 已发布" % name)
-        msg += "\n\n点「立即更新」会自动下载新版本、替换当前程序并重新打开。"
-        if messagebox.askyesno("发现新版本 " + name, msg):
+        """自绘更新窗口：立即更新 / 稍后"""
+        top = tk.Toplevel(self.root)
+        top.title("发现新版本 %s" % name)
+        top.configure(bg=BG)
+        top.resizable(False, False)
+        try:
+            top.transient(self.root)
+        except Exception:
+            pass
+        tk.Label(top, text="发现新版本 " + name, bg=BG, fg=FG,
+                 font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=18, pady=(16, 6))
+        body = tk.Label(top, text="本次更新内容：\n" + (changes.strip() or "新版本 %s 已发布" % name),
+                        bg=BG, fg=SUB, justify="left", wraplength=520,
+                        font=("Microsoft YaHei UI", 9))
+        body.pack(anchor="w", padx=18, pady=(0, 10))
+        tk.Label(top, text="点「立即更新」会自动下载新版本、替换当前程序并重新打开。",
+                 bg=BG, fg=SUB, justify="left", wraplength=520,
+                 font=("Microsoft YaHei UI", 9)).pack(anchor="w", padx=18, pady=(0, 14))
+
+        def go():
+            top.destroy()
             self.download_update()
+
+        row = tk.Frame(top, bg=BG)
+        row.pack(fill="x", padx=18, pady=(0, 16))
+        b1 = tk.Button(row, text="立即更新", command=go, bg=BLUE, fg="#ffffff", bd=0,
+                       font=("Microsoft YaHei UI", 10), width=12, height=2,
+                       activebackground="#1f6feb", activeforeground="#ffffff", cursor="hand2")
+        b1.pack(side="right", padx=(8, 0))
+        b2 = tk.Button(row, text="稍后", command=top.destroy, bg=CARD, fg=FG, bd=0,
+                       font=("Microsoft YaHei UI", 10), width=10, height=2,
+                       activebackground="#21262d", activeforeground=FG, cursor="hand2")
+        b2.pack(side="right")
+        top.update_idletasks()
+        try:
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 120
+            top.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+        except Exception:
+            pass
+        top.grab_set()
 
     def download_update(self):
         def work():
@@ -586,7 +623,7 @@ class App(object):
             t = Task(i, u)
             self.tasks.append(t)
             self.tree.insert("", "end", iid=str(i),
-                             values=(i, u[:80], "", "等待", "0%"))
+                             values=(i, u[:70], "", "", "等待", "0%"))
         self.logline("识别到 %d 条链接" % len(urls))
 
     # ---------- 下载 ----------
@@ -686,7 +723,9 @@ class App(object):
                     info = ydl.extract_info(task.url, download=False)
                     title = (info or {}).get("title") or task.url
                     dur = human_time((info or {}).get("duration"))
-                    self.events.put(("meta", idx, title, dur))
+                    author = ((info or {}).get("uploader") or (info or {}).get("channel")
+                              or (info or {}).get("creator") or "")
+                    self.events.put(("meta", idx, title, author, dur))
                     ydl.download([task.url])
                 self.set_status(idx, "已完成", 1.0)
                 self.events.put(("log", "✓ %s" % title))
@@ -715,17 +754,18 @@ class App(object):
                     iid = str(idx)
                     if self.tree.exists(iid):
                         vals = list(self.tree.item(iid, "values"))
-                        vals[3] = status
+                        vals[4] = status
                         if p is not None:
-                            vals[4] = "%d%%" % int(p * 100)
+                            vals[5] = "%d%%" % int(p * 100)
                         self.tree.item(iid, values=vals)
                 elif kind == "meta":
-                    idx, title, dur = ev[1], ev[2], ev[3]
+                    idx, title, author, dur = ev[1], ev[2], ev[3], ev[4]
                     iid = str(idx)
                     if self.tree.exists(iid):
                         vals = list(self.tree.item(iid, "values"))
-                        vals[1] = title[:80]
-                        vals[2] = dur
+                        vals[1] = title[:70]
+                        vals[2] = (author or "")[:16]
+                        vals[3] = dur
                         self.tree.item(iid, values=vals)
                 elif kind == "log":
                     self.logline(ev[1])
