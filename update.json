@@ -1,7 +1,6 @@
 {
- "versionCode": 13,
- "versionName": "1.9.3",
- "changes": "1. 「扫码登录」修好，登录窗口能正常弹出\n2. 浏览器自己退出会自动换配置目录/换默认浏览器兜底\n3. 兼容非 C 盘安装\n4. 不再在桌面生成 vd_log.txt",
- "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe",
- "urlCdn": "https://aka.doubaocdn.com/s/UUIOl5Hl5S"
+ "versionCode": 14,
+ "versionName": "1.9.4",
+ "changes": "1. 扫码登录只开一个窗口，不再冒好几个\n2. 登录后浏览器正常关闭，Cookie 能落盘，登录态读得到\n3. 登录前校验 Cookie 是否保存成功\n4. 修复登录后仍识别不到标题/作者",
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
