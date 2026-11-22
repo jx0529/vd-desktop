@@ -17,13 +17,14 @@ import time
 import json
 import queue
 import threading
+import shutil
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.2"
-APP_VC = 12
+APP_VER = "1.9.3"
+APP_VC = 13
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -31,10 +32,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 更新窗口显示的是要装的新版本号，不再显示旧的\n"
-    "2. 更新进度会动：显示百分比、已下载/总大小和速度，支持断点续传\n"
-    "3. 主下载地址连不上会自动换备用地址，不再一直卡 0%\n"
-    "4. 不再在软件旁边（桌面）生成 vd_log.txt，日志改存用户数据目录"
+    "1. 「扫码登录」修好：会先清掉上次留下的浏览器锁文件，窗口能正常弹出\n"
+    "2. 浏览器启动后自己退掉时会自动换新配置目录、并改用默认浏览器兜底\n"
+    "3. 兼容系统装在非 C 盘、Edge/Chrome 装在别处的电脑\n"
+    "4. 下载的视频仍统一放进「视频下载器」文件夹，桌面不再生成 vd_log.txt"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -694,23 +695,43 @@ def detect_default_browser():
 
 
 def find_browser_exe(browser):
-    """找 Edge / Chrome 的 exe 路径"""
+    """找 Edge / Chrome 的 exe 路径（注册表 + PATH + 常见安装位置，兼容非 C 盘）"""
     if sys.platform != "win32":
         return None
-    cands = []
-    if browser == "Edge":
-        cands = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        ]
-    elif browser == "Chrome":
-        cands = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ]
-    for c in cands:
-        if os.path.isfile(c):
-            return c
+    names = ["msedge.exe"] if browser == "Edge" else ["chrome.exe"]
+    # 1) 注册表 App Paths（最可靠，系统装在哪个盘都能找到）
+    try:
+        import winreg
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for nm in names:
+                try:
+                    k = winreg.OpenKey(hive, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + nm)
+                    path, _ = winreg.QueryValueEx(k, "")
+                    winreg.CloseKey(k)
+                    path = path.strip().strip('"')
+                    if os.path.isfile(path):
+                        return path
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # 2) PATH
+    for nm in names:
+        w = shutil.which(nm)
+        if w and os.path.isfile(w):
+            return w
+    # 3) 常见安装位置（盘符从环境变量取，不写死 C:）
+    roots = []
+    for env in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
+        v = os.environ.get(env)
+        if v:
+            roots.append(v)
+    for r in roots:
+        for nm in names:
+            for sub in ("Microsoft\\Edge\\Application", "Google\\Chrome\\Application"):
+                c = os.path.join(r, sub, nm)
+                if os.path.isfile(c):
+                    return c
     return None
 
 
@@ -982,21 +1003,25 @@ class App(object):
             return
 
         prof = login_profile_dir(browser)
-        try:
-            os.makedirs(prof, exist_ok=True)
-        except Exception:
-            pass
-        try:
-            if self._login_proc is not None and self._login_proc.poll() is None:
-                self._kill_login()
-            self._login_proc = subprocess.Popen(
-                [exe, "--user-data-dir=" + prof, "--no-first-run",
-                 "--no-default-browser-check", "https://www.douyin.com/"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.logline("已用独立的 %s 打开抖音登录页（不影响你平时的浏览器）" % browser)
-        except Exception as e:
-            self.logline("打不开浏览器: %s" % e)
-            return
+        ok, used_prof, code = self._spawn_login_browser(exe, prof, browser)
+        if not ok:
+            # 最后兜底：用系统默认浏览器打开（可能复用你正在用的浏览器）
+            try:
+                import webbrowser
+                webbrowser.open("https://www.douyin.com/")
+                self.logline("独立窗口启动失败（退出码 %s），已改用系统默认浏览器打开抖音" % code)
+                messagebox.showinfo("登录抖音",
+                                    "独立登录窗口没起来（这次是浏览器自身拒绝了启动）。\n"
+                                    "我已经用你默认的浏览器打开抖音，登录后请：\n"
+                                    "1. 完全关闭那个浏览器\n"
+                                    "2. 把上面的「Cookie 来源」选成你刚才用的浏览器\n"
+                                    "3. 再点「开始下载」")
+                return
+            except Exception as e:
+                self.logline("连默认浏览器也打不开: %s" % e)
+                messagebox.showwarning("登录抖音", "打不开浏览器，请手动打开浏览器登录抖音后再点「开始下载」")
+                return
+        self.logline("已用独立的 %s 打开抖音登录页（配置: %s，不影响你平时的浏览器）" % (browser, used_prof))
 
         ans = messagebox.askokcancel(
             "扫码登录抖音",
@@ -1009,14 +1034,57 @@ class App(object):
             self._kill_login()
             return
         self._kill_login()
-        dflt = os.path.join(prof, "Default")
-        self.cookie_profile = dflt if os.path.isdir(dflt) else prof
+        dflt = os.path.join(used_prof, "Default")
+        self.cookie_profile = dflt if os.path.isdir(dflt) else used_prof
         self.cfg["cookie_profile"] = self.cookie_profile
         self.cfg["cookiefile"] = ""
         self.cookiefile = ""
         save_config(self.cfg)
         self.ck_hint.config(text=self.cookie_hint_text())
         self.logline("登录完成，Cookie 将从独立配置读取，直接点「开始下载」")
+
+    def _spawn_login_browser(self, exe, prof, browser):
+        """启动独立配置的浏览器；被杀/自己退出就清锁换新目录重试，返回 (成功, 实际目录, 退出码)"""
+        code = None
+        try:
+            os.makedirs(prof, exist_ok=True)
+        except Exception:
+            pass
+        tries = [(prof, True), (prof, False), (prof + "_2", True), (prof + "_2", False)]
+        for path, clean in tries:
+            try:
+                os.makedirs(path, exist_ok=True)
+            except Exception:
+                pass
+            if clean:
+                _clear_profile_locks(path)
+            self._kill_login()
+            try:
+                args = [exe, "--user-data-dir=" + path, "--no-first-run",
+                        "--no-default-browser-check", "--new-window",
+                        "https://www.douyin.com/"]
+                proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                dlog("启动浏览器失败(%s): %s" % (path, e))
+                code = -1
+                continue
+            self._login_proc = proc
+            alive = True
+            for _ in range(16):  # 等 4 秒看它是不是自己退了
+                time.sleep(0.25)
+                if proc.poll() is not None:
+                    alive = False
+                    break
+            if alive:
+                return True, path, None
+            code = proc.returncode
+            dlog("浏览器启动后立即退出(退出码 %s, 配置 %s)" % (code, path))
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+            self._login_proc = None
+        return False, prof, code
 
     def _kill_login(self):
         p = self._login_proc
