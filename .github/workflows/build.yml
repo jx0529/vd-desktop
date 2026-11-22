@@ -35,9 +35,15 @@ jobs:
           Copy-Item $exe.FullName .\ffmpeg.exe
           .\ffmpeg.exe -version
 
+      - name: 还原图标
+        run: |
+          $b64 = Get-Content app_icon.b64 -Raw
+          [IO.File]::WriteAllBytes("app.ico", [Convert]::FromBase64String($b64))
+          dir app.ico
+
       - name: 打包 exe
         run: |
-          python -m PyInstaller --noconfirm --onefile --windowed --name "VideoDownloader" --collect-all yt_dlp --add-binary "ffmpeg.exe;." vd_desktop.py
+          python -m PyInstaller --noconfirm --onefile --windowed --name "VideoDownloader" --icon "app.ico" --collect-all yt_dlp --add-binary "ffmpeg.exe;." --add-data "app.ico;." vd_desktop.py
           dir dist
 
       - name: 上传构建产物
