@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.10"
-APP_VC = 20
+APP_VER = "1.9.11"
+APP_VC = 21
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -39,7 +39,8 @@ THIS_VERSION_NOTES = (
     "5. 更新包 CDN 优先 + 6 段并行，速度快很多\n"
     "6. 右侧滚动条改成深色，和背景一致，不再突兀\n"
     "7. 启动时预先加载解析组件，运行中不再报 base_library.zip 找不到\n"
-    "8. 登录窗口启动前强清占用配置的浏览器进程，减少「退出码 21」"
+    "8. 登录窗口启动前强清占用配置的浏览器进程，减少「退出码 21」\n"
+    "9. 画质 / Cookie 下拉框改成深色，不再出现白色块"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -1152,6 +1153,31 @@ class App(object):
         s.configure("green.Horizontal.TProgressbar", troughcolor="#21262d",
                     background=GREEN, borderwidth=0)
         s.configure("TCombobox", fieldbackground=CARD, background=CARD, foreground=FG)
+        # 下拉框在 Windows 上默认是白底，单独做一个深色样式
+        try:
+            s.configure("Dark.TCombobox", fieldbackground=CARD, background=CARD,
+                        foreground=FG, selectbackground=CARD, selectforeground=FG,
+                        arrowcolor=SUB, bordercolor="#30363d", lightcolor=CARD,
+                        darkcolor=CARD, insertcolor=FG, padding=(6, 3))
+            s.map("Dark.TCombobox",
+                  fieldbackground=[("readonly", CARD), ("!disabled", CARD)],
+                  background=[("readonly", CARD), ("active", "#21262d"),
+                              ("pressed", "#21262d"), ("!disabled", CARD)],
+                  foreground=[("readonly", FG), ("disabled", SUB)],
+                  selectbackground=[("readonly", CARD)],
+                  selectforeground=[("readonly", FG)],
+                  arrowcolor=[("readonly", SUB), ("active", FG)])
+        except Exception:
+            pass
+        # 展开后的下拉列表也要深色
+        for pat, val in (("*TCombobox*Listbox.background", CARD),
+                         ("*TCombobox*Listbox.foreground", FG),
+                         ("*TCombobox*Listbox.selectBackground", BLUE),
+                         ("*TCombobox*Listbox.selectForeground", "#ffffff")):
+            try:
+                self.root.option_add(pat, val, "80")
+            except Exception:
+                pass
         # 滚动条跟着深色背景走，别再用默认的白色
         for _n in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
             try:
@@ -1216,13 +1242,15 @@ class App(object):
         self.btn(bar, "开始下载", self.start, primary=True, width=12)
         self.btn(bar, "清空", self.clear, primary=False, width=8)
         tk.Label(bar, text="画质", bg=BG, fg=FG, font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(16, 6))
-        self.q_cb = ttk.Combobox(bar, values=["最高画质", "1080p", "720p"], width=9, state="readonly")
+        self.q_cb = ttk.Combobox(bar, values=["最高画质", "1080p", "720p"], width=9, state="readonly",
+                                 style="Dark.TCombobox")
         self.q_cb.set(self.quality)
         self.q_cb.pack(side="left")
 
         tk.Label(bar, text="Cookie", bg=BG, fg=FG,
                  font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(16, 6))
         self.ck_cb = ttk.Combobox(bar, values=["不使用", "Chrome", "Edge", "Firefox"],
+                                  style="Dark.TCombobox",
                                   width=9, state="readonly")
         self.ck_cb.set(self.cookie_browser)
         self.ck_cb.pack(side="left")
