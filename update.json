@@ -1,1 +1,1 @@
-{"versionCode":7,"versionName":"1.6.0","changes":"1. 「识别链接」现在真的会读出标题 / 作者 / 时长，不再只显示链接\n2. 识别完成后状态从「等待」变为「待下载」\n3. 全新的应用图标\n4. 更新后自动删除旧安装包和旧程序备份","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{"versionCode":8,"versionName":"1.7.0","changes":"1. 抖音改用「本机浏览器登录态 + 页面内取数据」，不再靠 yt-dlp 硬登录\n2. 识别抖音链接能拿到标题、作者、时长、点赞数，并缓存直链直接下载\n3. 视频下载有进度条，更新有独立进度窗口\n4. 更新完成立刻删除旧安装包和旧程序备份，窗口图标修好了","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}

@@ -22,18 +22,218 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.6.0"
-APP_VC = 7
+APP_VER = "1.7.0"
+APP_VC = 8
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 「识别链接」现在真的会读出标题 / 作者 / 时长，不再只显示链接\n"
-    "2. 识别完成状态从「等待」变成「待下载」，可以直接点开始下载\n"
-    "3. 全新的应用图标\n"
-    "4. 更新后自动删除旧安装包和旧程序备份"
+    "1. 抖音改用「本机浏览器登录态 + 页面内取数据」，不再靠 yt-dlp 硬登录\n"
+    "2. 识别抖音链接能拿到标题、作者、时长、点赞数，并缓存直链直接下载\n"
+    "3. 视频下载有进度条（表格百分比 + 底部总进度），更新有独立进度窗口\n"
+    "4. 更新完成立刻删除旧安装包和旧程序备份，图标也修好了"
 )
+
+# ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
+import socket
+import base64
+import struct
+import urllib.request
+import urllib.error
+
+DOUYIN_ID_RE = re.compile(r'/(?:video|note|share/video)/(\d{15,})')
+DOUYIN_SHORT_RE = re.compile(r'v\.douyin\.com/([A-Za-z0-9_\-]+)')
+
+
+def douyin_id_of(url):
+    """从各种抖音链接里取 aweme_id"""
+    if not url:
+        return ""
+    m = DOUYIN_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    m = re.search(r'(?:modal_id|aweme_id|item_ids?)=([0-9]{15,})', url)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _ws_send(sock, obj):
+    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    n = len(data)
+    head = bytearray([0x81])
+    if n < 126:
+        head.append(0x80 | n)
+    elif n < 65536:
+        head.append(0x80 | 126)
+        head += struct.pack("!H", n)
+    else:
+        head.append(0x80 | 127)
+        head += struct.pack("!Q", n)
+    mask = os.urandom(4)
+    head += mask
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+    sock.sendall(bytes(head) + masked)
+
+
+def _ws_recv(sock):
+    buf = b""
+
+    def read(n):
+        nonlocal buf
+        while len(buf) < n:
+            chunk = sock.recv(max(1, n - len(buf)))
+            if not chunk:
+                raise EOFError("ws closed")
+            buf += chunk
+        out, buf = buf[:n], buf[n:]
+        return out
+
+    payload = b""
+    while True:
+        h = read(2)
+        b1, b2 = h[0], h[1]
+        fin = b1 & 0x80
+        op = b1 & 0x0f
+        ln = b2 & 0x7f
+        if ln == 126:
+            ln = struct.unpack("!H", read(2))[0]
+        elif ln == 127:
+            ln = struct.unpack("!Q", read(8))[0]
+        if b2 & 0x80:
+            read(4)
+        payload += read(ln)
+        if fin:
+            break
+    if op == 0x8:
+        raise EOFError("ws closed")
+    try:
+        return json.loads(payload.decode("utf-8", "replace"))
+    except Exception:
+        return {}
+
+
+def cdp_ws_connect(ws_url, timeout=10):
+    m = re.match(r'ws://([^/:]+):(\d+)(/.*)', ws_url)
+    if not m:
+        raise RuntimeError("bad ws url: " + ws_url)
+    host, port, path = m.group(1), int(m.group(2)), m.group(3)
+    sock = socket.create_connection((host, port), timeout)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = ("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\n"
+           "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+           "Sec-WebSocket-Version: 13\r\n\r\n") % (path, host, port, key)
+    sock.sendall(req.encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("ws handshake failed")
+        buf += chunk
+    return sock
+
+
+DETAIL_JS = """(async () => {
+  try {
+    const u = "/aweme/v1/web/aweme/detail/?device_platform=webapp&aid=6383&channel=channel_pc_web"
+      + "&aweme_id=__ID__&pc_client_type=1&version_code=170400&version_name=17.4.0"
+      + "&cookie_enabled=true&platform=PC";
+    const r = await fetch(u, {credentials: "include"});
+    if (!r.ok) return JSON.stringify({ok: false, code: r.status});
+    const j = await r.json();
+    const d = j.aweme_detail || {};
+    const v = d.video || {};
+    let purl = "";
+    if (v.play_addr && v.play_addr.url_list && v.play_addr.url_list.length)
+      purl = v.play_addr.url_list[0];
+    else if (v.play_addr_h264 && v.play_addr_h264.url_list && v.play_addr_h264.url_list.length)
+      purl = v.play_addr_h264.url_list[0];
+    else if (v.play_addr_265 && v.play_addr_265.url_list && v.play_addr_265.url_list.length)
+      purl = v.play_addr_265.url_list[0];
+    return JSON.stringify({
+      ok: true,
+      title: d.desc || "",
+      author: (d.author || {}).nickname || "",
+      dur: (v.duration || 0),
+      like: ((d.statistics || {}).digg_count || 0),
+      play: purl
+    });
+  } catch (e) { return JSON.stringify({ok: false, code: String(e)}); }
+})()"""
+
+
+def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
+    """用独立登录配置的无头浏览器，在页面里带着 Cookie 请求详情接口"""
+    aid = douyin_id_of(video_url)
+    if not aid:
+        raise RuntimeError("抖音链接里没有视频 id")
+    page = "https://www.douyin.com/video/" + aid
+    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    proc = subprocess.Popen(
+        [exe, "--headless=new", "--remote-debugging-port=%d" % port,
+         "--user-data-dir=" + prof, "--no-first-run", "--no-default-browser-check",
+         "--disable-gpu", "--disable-background-networking", page],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+    sock = None
+    try:
+        ws = None
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d/json" % port, timeout=2) as r:
+                    tabs = json.loads(r.read().decode("utf-8", "replace"))
+                for t in tabs:
+                    if t.get("type") == "page" and "douyin.com" in (t.get("url") or ""):
+                        ws = t.get("webSocketDebuggerUrl")
+                        break
+            except Exception:
+                time.sleep(0.5)
+            if ws:
+                break
+            time.sleep(0.5)
+        if not ws:
+            raise RuntimeError("浏览器没有就绪（可能被安全软件拦了）")
+        sock = cdp_ws_connect(ws)
+        _ws_send(sock, {"id": 1, "method": "Runtime.enable"})
+        _ws_recv(sock)
+        # 等页面上下文建好
+        time.sleep(2.0)
+        _ws_send(sock, {"id": 2, "method": "Runtime.evaluate", "params": {
+            "expression": DETAIL_JS.replace("__ID__", aid),
+            "awaitPromise": True, "returnByValue": True, "userGesture": True}})
+        result = ""
+        end = time.time() + timeout
+        while time.time() < end:
+            msg = _ws_recv(sock)
+            if msg.get("id") == 2:
+                val = (((msg.get("result") or {}).get("result") or {}).get("value"))
+                result = val or ""
+                break
+        if not result:
+            raise RuntimeError("页面没有返回数据")
+        data = json.loads(result)
+        if not data.get("ok"):
+            raise RuntimeError("抖音返回 %s（多半是没登录或会话过期）" % data.get("code"))
+        if not data.get("play"):
+            raise RuntimeError("没找到播放地址")
+        return data
+    finally:
+        try:
+            if sock:
+                sock.close()
+        except Exception:
+            pass
+        try:
+            if proc.poll() is None:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    proc.terminate()
+        except Exception:
+            pass
+
 
 BG = "#0d1117"
 CARD = "#161b22"
@@ -42,6 +242,9 @@ SUB = "#8b949e"
 BLUE = "#2f81f7"
 GREEN = "#3fb950"
 RED = "#e5534b"
+
+UA_DESKTOP = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 URL_PATTERN = re.compile(r'https?://[^\s<>"\'）)】\]，,;；]+', re.I)
 
@@ -60,7 +263,7 @@ def cleanup_leftovers():
     cur = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else None
     if not cur:
         return
-    for p in (cur + ".old", cur + ".bak"):
+    for p in (cur + ".old", cur + ".bak", os.path.join(os.path.dirname(cur), "VideoDownloader_new.exe")):
         try:
             if os.path.exists(p):
                 os.remove(p)
@@ -205,6 +408,8 @@ class App(object):
         self.quality = self.cfg.get("quality") or "最高画质"
         self.cookie_browser = self.cfg.get("cookie_browser") or "不使用"
         self.cookie_profile = self.cfg.get("cookie_profile") or ""
+        self.dy_direct = {}
+        self._dy_info_cache = {}
         self._login_proc = None
         self.cookiefile = self.cfg.get("cookiefile") or ""
         self.tasks = []
@@ -218,6 +423,13 @@ class App(object):
             ico = res_path("app.ico")
             if os.path.isfile(ico):
                 self.root.iconbitmap(ico)
+        except Exception:
+            pass
+        try:
+            png = res_path("app.png")
+            if os.path.isfile(png):
+                self._icon_img = tk.PhotoImage(file=png)
+                self.root.iconphoto(True, self._icon_img)
         except Exception:
             pass
         self.root.title("%s · 电脑版 %s" % (APP_NAME, APP_VER))
@@ -238,6 +450,11 @@ class App(object):
             pass
         s.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=FG,
                     rowheight=28, borderwidth=0, font=("Microsoft YaHei UI", 9))
+        try:
+            s.configure("Horizontal.TProgressbar", troughcolor="#21262d", background=BLUE,
+                        bordercolor="#21262d", lightcolor=BLUE, darkcolor=BLUE)
+        except Exception:
+            pass
         s.configure("Treeview.Heading", background="#21262d", foreground=SUB,
                     borderwidth=0, font=("Microsoft YaHei UI", 9))
         s.map("Treeview", background=[("selected", "#1f6feb")])
@@ -330,6 +547,15 @@ class App(object):
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+        # 总体进度条（当前下载）
+        pf = tk.Frame(self.root, bg=BG)
+        pf.pack(fill="x", padx=18, pady=(2, 4))
+        self.pbar = ttk.Progressbar(pf, mode="determinate", maximum=100, length=300)
+        self.pbar.pack(side="left", fill="x", expand=True)
+        self.plbl = tk.Label(pf, text="0%", bg=BG, fg=SUB, width=6,
+                             font=("Consolas", 9), anchor="e")
+        self.plbl.pack(side="left", padx=(8, 0))
 
         # 日志
         tk.Label(self.root, text="运行日志", bg=BG, fg=SUB,
@@ -557,33 +783,77 @@ class App(object):
             pass
         top.grab_set()
 
+    def show_upd_progress(self):
+        """更新下载进度窗口：进度条 + 百分比"""
+        try:
+            if getattr(self, "_updwin", None) is not None:
+                return
+            top = tk.Toplevel(self.root)
+            self._updwin = top
+            top.title("正在下载新版本")
+            top.configure(bg=BG)
+            top.resizable(False, False)
+            top.transient(self.root)
+            tk.Label(top, text="正在下载新版本 %s……" % APP_VER, bg=BG, fg=FG,
+                     font=("Microsoft YaHei UI", 11)).pack(pady=(18, 8))
+            self._updbar = ttk.Progressbar(top, mode="determinate", maximum=100)
+            self._updbar.pack(fill="x", padx=26)
+            self._updlbl = tk.Label(top, text="0%", bg=BG, fg=SUB, font=("Consolas", 10))
+            self._updlbl.pack(pady=(6, 0))
+            top.protocol("WM_DELETE_WINDOW", lambda: None)
+            top.update_idletasks()
+            w, h = 420, 150
+            x = self.root.winfo_rootx() + (max(self.root.winfo_width(), w) - w) // 2
+            y = self.root.winfo_rooty() + (max(self.root.winfo_height(), h) - h) // 2
+            top.geometry("%dx%d+%d+%d" % (w, h, max(x, 0), max(y, 0)))
+            top.lift()
+        except Exception:
+            self._updwin = None
+
+    def close_upd_progress(self):
+        try:
+            if getattr(self, "_updwin", None) is not None:
+                self._updwin.destroy()
+        except Exception:
+            pass
+        self._updwin = None
+
     def download_update(self):
+        self.show_upd_progress()
+
         def work():
-            try:
-                import urllib.request, shutil
-                target_dir = os.path.dirname(sys.executable)
-                tmp = os.path.join(target_dir, "VideoDownloader_new.exe")
-                req = urllib.request.Request(UPDATE_EXE, headers={"User-Agent": "VDDesktop"})
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    total = int(r.headers.get("Content-Length") or 0)
-                    got = 0
-                    with open(tmp, "wb") as f:
-                        while True:
-                            buf = r.read(65536)
-                            if not buf:
-                                break
-                            f.write(buf)
-                            got += len(buf)
-                            if total:
-                                pct = int(got * 100 / total)
-                                if pct % 10 == 0:
-                                    self.events.put(("log", "下载新版本 %d%%" % pct))
-                if got < 1024 * 1024:
-                    raise Exception("下载的安装包不完整")
-                self.events.put(("apply", tmp))
-            except Exception as e:
-                self.logline("更新错误，请重试")
-                self.events.put(("upfail",))
+            import urllib.request
+            target_dir = os.path.dirname(sys.executable)
+            tmp = os.path.join(target_dir, "VideoDownloader_new.exe")
+            last = None
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(UPDATE_EXE, headers={"User-Agent": "VDDesktop"})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        total = int(r.headers.get("Content-Length") or 0)
+                        got = 0
+                        with open(tmp, "wb") as f:
+                            while True:
+                                buf = r.read(65536)
+                                if not buf:
+                                    break
+                                f.write(buf)
+                                got += len(buf)
+                                if total:
+                                    self.events.put(("updprog", int(got * 100 / total)))
+                    if got < 1024 * 1024:
+                        raise Exception("下载的安装包不完整")
+                    self.events.put(("apply", tmp))
+                    return
+                except Exception as e:
+                    last = e
+                    try:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                    except Exception:
+                        pass
+                    time.sleep(2)
+            self.events.put(("updprogfail", "更新错误，请重试"))
         threading.Thread(target=work, daemon=True).start()
 
     def apply_update(self, new_exe):
@@ -596,8 +866,7 @@ class App(object):
             import shutil
             shutil.copy2(new_exe, cur)
             try:
-                if os.path.dirname(os.path.abspath(new_exe)) != os.path.dirname(cur):
-                    os.remove(new_exe)
+                os.remove(new_exe)
             except Exception:
                 pass
             subprocess.Popen([cur], cwd=os.path.dirname(cur), close_fds=True)
@@ -661,6 +930,28 @@ class App(object):
             opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
         return opts
 
+
+    def _douyin_headless_args(self):
+        browser = self.cookie_browser if self.cookie_browser != "不使用" else (detect_default_browser() or "Edge")
+        exe = find_browser_exe(browser)
+        if exe is None:
+            browser = "Chrome" if browser == "Edge" else "Edge"
+            exe = find_browser_exe(browser)
+        if exe is None:
+            return None, None
+        prof = login_profile_dir(browser)
+        if self.cookie_profile and os.path.isdir(os.path.dirname(self.cookie_profile)):
+            prof = os.path.dirname(self.cookie_profile)
+        os.makedirs(prof, exist_ok=True)
+        return exe, prof
+
+    def douyin_resolve(self, url):
+        """先用无头浏览器在登录态里取详情，失败返回 None"""
+        exe, prof = self._douyin_headless_args()
+        if not exe:
+            return None
+        return resolve_douyin_cdp(exe, prof, url)
+
     def _recognize_one(self, task):
         """只读解析：拿到标题、作者、时长，不下载"""
         try:
@@ -670,6 +961,27 @@ class App(object):
             self.set_status(task.idx, "识别失败", 0.0)
             return
         self.set_status(task.idx, "识别中", 0.0)
+        if "douyin.com" in task.url:
+            try:
+                d = self.douyin_resolve(task.url)
+            except Exception as e:
+                d = None
+                self.events.put(("log", "抖音网页解析没成功：%s" % (str(e)[:80])))
+            if d:
+                title = (d.get("title") or task.url).strip()
+                author = d.get("author") or ""
+                dur = human_time((d.get("dur") or 0) / 1000.0 if d.get("dur") else 0)
+                like = d.get("like") or 0
+                like_s = ("%d" % like) if like < 10000 else ("%.1f万" % (like / 10000.0))
+                self.dy_direct[task.url] = d.get("play")
+                self._dy_info_cache[task.url] = {"title": title, "author": author,
+                                                 "dur": dur, "like": like_s}
+                self.events.put(("meta", task.idx, title, author, dur))
+                self.set_status(task.idx, "待下载", 0.0)
+                self.events.put(("log", "✓ %s%s%s · 赞 %s" % (title,
+                                 (" · " + author) if author else "",
+                                 (" · " + dur) if dur else "", like_s)))
+                return
         opts = self._cookie_opts({"quiet": True, "noprogress": True,
                                   "no_warnings": False, "retries": 3})
         try:
@@ -770,6 +1082,36 @@ class App(object):
                 elif d.get("status") == "finished":
                     self.set_status(idx, "处理中", 1.0)
 
+            direct = self.dy_direct.get(task.url)
+            if direct:
+                info0 = self._dy_info_cache.get(task.url) or {}
+                title0 = info0.get("title") or "douyin"
+                self.events.put(("meta", task.idx, title0, info0.get("author", ""), info0.get("dur", "")))
+                self.set_status(task.idx, "下载中", 0.0)
+                dopts = {
+                    "outtmpl": os.path.join(self.outdir, "%(title).120B.%(ext)s"),
+                    "format": "best",
+                    "noprogress": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "progress_hooks": [hook],
+                    "http_headers": {"User-Agent": UA_DESKTOP,
+                                     "Referer": "https://www.douyin.com/"},
+                    "overwrites": True,
+                }
+                try:
+                    safe = re.sub(r'[\\/:*?"<>|]+', " ", title0).strip()[:80] or "douyin"
+                    dopts["outtmpl"] = os.path.join(self.outdir, safe + ".%(ext)s")
+                    with YoutubeDL(dopts) as ydl2:
+                        ydl2.download([direct])
+                    self.set_status(task.idx, "已完成", 1.0)
+                    self.events.put(("log", "✓ %s" % title0))
+                except Exception as e:
+                    msg = str(e).splitlines()[0][:100] if str(e) else "未知错误"
+                    self.set_status(task.idx, "失败: " + msg, 0.0)
+                    self.events.put(("log", "✗ %s → %s" % (task.url, msg)))
+                continue
+
             fmt = self._format_for(self.quality)
             opts = {
                 "outtmpl": os.path.join(self.outdir, "%(title).120B [%(id)s].%(ext)s"),
@@ -823,12 +1165,21 @@ class App(object):
                 if kind == "row":
                     idx, status, p = ev[1], ev[2], ev[3]
                     iid = str(idx)
+                    pct = None if p is None else max(0, min(100, int(p * 100)))
                     if self.tree.exists(iid):
                         vals = list(self.tree.item(iid, "values"))
-                        vals[4] = status
-                        if p is not None:
-                            vals[5] = "%d%%" % int(p * 100)
+                        vals[4] = status + ((" %d%%" % pct) if (pct is not None and status == "下载中") else "")
+                        if pct is not None:
+                            vals[5] = "%d%%" % pct
                         self.tree.item(iid, values=vals)
+                    if pct is not None:
+                        try:
+                            self.pbar["value"] = pct
+                            self.plbl.config(text="%d%%" % pct)
+                            if pct >= 100:
+                                self.pbar["value"] = 0
+                        except Exception:
+                            pass
                 elif kind == "meta":
                     idx, title, author, dur = ev[1], ev[2], ev[3], ev[4]
                     iid = str(idx)
@@ -840,6 +1191,26 @@ class App(object):
                         self.tree.item(iid, values=vals)
                 elif kind == "log":
                     self.logline(ev[1])
+                elif kind == "updprog":
+                    pct = max(0, min(100, int(ev[1])))
+                    try:
+                        self._updbar["value"] = pct
+                        self._updlbl.config(text="%d%%" % pct)
+                    except Exception:
+                        pass
+                    try:
+                        self.pbar["value"] = pct
+                        self.plbl.config(text="%d%%" % pct)
+                    except Exception:
+                        pass
+                elif kind == "updprogfail":
+                    self.close_upd_progress()
+                    try:
+                        self.pbar["value"] = 0
+                        self.plbl.config(text="0%")
+                    except Exception:
+                        pass
+                    messagebox.showwarning("检查更新", ev[1])
                 elif kind == "update":
                     self.prompt_update(ev[1], ev[2], ev[3])
                 elif kind == "uptodate":
@@ -851,6 +1222,7 @@ class App(object):
                     if not self._silent_check:
                         messagebox.showwarning("检查更新", "更新错误，请重试")
                 elif kind == "apply":
+                    self.close_upd_progress()
                     self.apply_update(ev[1])
                 elif kind == "done":
                     self.busy = False
