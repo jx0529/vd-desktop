@@ -1,7 +1,6 @@
 {
- "versionCode": 15,
- "versionName": "1.9.5",
- "changes": "1. 扫码登录只开一个窗口\n2. 关闭浏览器走正常流程，Cookie 能落盘\n3. 抖音识别失败时用真实登录态兜底\n4. 桌面不再留 vd_log.txt",
- "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe",
- "urlCdn": "https://aka.doubaocdn.com/s/UgQrDq5dob"
+ "versionCode": 16,
+ "versionName": "1.9.6",
+ "changes": "1. 识别前等页面加载完、ttwid 落 Cookie\n2. 取数据失败自动重试 3 次\n3. 登录态识别不出来时自动换干净配置再试\n4. 扫码登录仍只开一个窗口",
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
