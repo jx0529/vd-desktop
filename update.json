@@ -1,7 +1,6 @@
 {
- "versionCode": 12,
- "versionName": "1.9.2",
- "changes": "1. 更新窗口显示要装的新版本号\n2. 更新进度显示百分比/大小/速度，支持断点续传\n3. 主地址失败自动换备用地址，不再卡 0%\n4. 不再在桌面生成 vd_log.txt",
- "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe",
- "urlCdn": "https://aka.doubaocdn.com/s/CB3NFhr0Vm"
+ "versionCode": 13,
+ "versionName": "1.9.3",
+ "changes": "1. 「扫码登录」修好，登录窗口能正常弹出\n2. 浏览器自己退出会自动换配置目录/换默认浏览器兜底\n3. 兼容非 C 盘安装\n4. 不再在桌面生成 vd_log.txt",
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
