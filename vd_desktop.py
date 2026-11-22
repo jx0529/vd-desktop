@@ -36,7 +36,8 @@ THIS_VERSION_NOTES = (
     "2. 识别时会自动带上保存的登录态，抖音标题/作者能正常取到\n"
     "3. 更新进度多了剩余时间，显示成「剩 1:20」\n"
     "4. 更新失败可直接用浏览器下载最新版\n"
-    "5. 更新包 CDN 优先 + 6 段并行，速度快很多"
+    "5. 更新包 CDN 优先 + 6 段并行，速度快很多\n"
+    "6. 右侧滚动条改成深色，和背景一致，不再突兀"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -1086,6 +1087,16 @@ class App(object):
         s.configure("green.Horizontal.TProgressbar", troughcolor="#21262d",
                     background=GREEN, borderwidth=0)
         s.configure("TCombobox", fieldbackground=CARD, background=CARD, foreground=FG)
+        # 滚动条跟着深色背景走，别再用默认的白色
+        for _n in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            try:
+                s.configure(_n, gripcount=0, background="#2b333d", darkcolor="#2b333d",
+                            lightcolor="#2b333d", troughcolor=CARD, bordercolor=CARD,
+                            arrowcolor="#8b949e", arrowsize=12, width=10, relief="flat")
+                s.map(_n, background=[("active", "#3c4650"), ("disabled", CARD)],
+                      arrowcolor=[("active", FG)])
+            except Exception:
+                pass
 
     def _build(self):
         # 顶部标题行
