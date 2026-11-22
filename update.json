@@ -1,1 +1,1 @@
-{"versionCode":8,"versionName":"1.7.0","changes":"1. 抖音改用「本机浏览器登录态 + 页面内取数据」，不再靠 yt-dlp 硬登录\n2. 识别抖音链接能拿到标题、作者、时长、点赞数，并缓存直链直接下载\n3. 视频下载有进度条，更新有独立进度窗口\n4. 更新完成立刻删除旧安装包和旧程序备份，窗口图标修好了","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{"versionCode": 9, "versionName": "1.8.0", "changes": "1. 抖音分享短链（v.douyin.com）现在能自动跟到视频，识别出标题、作者、时长、点赞\n2. 浏览器取数据加了多重兜底：自动换端口、清锁文件、无头失败自动换窗口模式\n3. 登录配置改到用户数据目录，更新时不会再丢登录态\n4. 识别失败会把原因写进日志，并生成 vd_log.txt", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}

@@ -22,17 +22,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.7.0"
-APP_VC = 8
+APP_VER = "1.8.0"
+APP_VC = 9
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 抖音改用「本机浏览器登录态 + 页面内取数据」，不再靠 yt-dlp 硬登录\n"
-    "2. 识别抖音链接能拿到标题、作者、时长、点赞数，并缓存直链直接下载\n"
-    "3. 视频下载有进度条（表格百分比 + 底部总进度），更新有独立进度窗口\n"
-    "4. 更新完成立刻删除旧安装包和旧程序备份，图标也修好了"
+    "1. 登录配置改到用户数据目录，更新时不会再丢登录态\n"
+    "2. 抖音识别加多重兜底（无头/窗口两种方式、自动换端口、清锁文件）\n"
+    "3. 识别失败会把原因写进界面日志，并生成 vd_log.txt 方便排查\n"
+    "4. 下载进度、更新进度都能看到百分比"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -42,12 +42,27 @@ import struct
 import urllib.request
 import urllib.error
 
+LOG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)),
+    "vd_log.txt")
+
+
+def dlog(msg):
+    """把关键步骤写进日志文件，出问题时用户直接把文件发过来"""
+    try:
+        line = "%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 DOUYIN_ID_RE = re.compile(r'/(?:video|note|share/video)/(\d{15,})')
 DOUYIN_SHORT_RE = re.compile(r'v\.douyin\.com/([A-Za-z0-9_\-]+)')
 
 
 def douyin_id_of(url):
-    """从各种抖音链接里取 aweme_id"""
+    """从各种抖音链接里取 aweme_id（短链会跟随跳转）"""
     if not url:
         return ""
     m = DOUYIN_ID_RE.search(url)
@@ -56,6 +71,41 @@ def douyin_id_of(url):
     m = re.search(r'(?:modal_id|aweme_id|item_ids?)=([0-9]{15,})', url)
     if m:
         return m.group(1)
+    if DOUYIN_SHORT_RE.search(url):
+        got = _expand_short(url)
+        if got:
+            return got
+    return ""
+
+
+def _expand_short(url):
+    """把 v.douyin.com/xxx 短链跟到最终视频页，取出 aweme_id"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA_DESKTOP,
+                                                   "Accept-Language": "zh-CN,zh;q=0.9"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            final = r.geturl()
+            body = ""
+            try:
+                body = r.read(300000).decode("utf-8", "replace")
+            except Exception:
+                pass
+    except Exception as e:
+        dlog("短链跳转失败: %s" % e)
+        return ""
+    m = DOUYIN_ID_RE.search(final) or re.search(r'(?:modal_id|aweme_id|item_ids?)=([0-9]{15,})', final)
+    if m:
+        dlog("短链解析到 id " + m.group(1))
+        return m.group(1)
+    for pat in (r'/video/(\d{15,})',
+                r'"aweme_id"\s*:\s*"?(\d{15,})',
+                r'aweme_id=(\d{15,})',
+                r'"itemId"\s*:\s*"?(\d{15,})'):
+        m = re.search(pat, body)
+        if m:
+            dlog("短链页面解析到 id " + m.group(1))
+            return m.group(1)
+    dlog("短链没有解析出 id: " + final[:100])
     return ""
 
 
@@ -139,9 +189,21 @@ DETAIL_JS = """(async () => {
     const u = "/aweme/v1/web/aweme/detail/?device_platform=webapp&aid=6383&channel=channel_pc_web"
       + "&aweme_id=__ID__&pc_client_type=1&version_code=170400&version_name=17.4.0"
       + "&cookie_enabled=true&platform=PC";
-    const r = await fetch(u, {credentials: "include"});
-    if (!r.ok) return JSON.stringify({ok: false, code: r.status});
-    const j = await r.json();
+    let j = null, code = "";
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch(u, {credentials: "include"});
+        if (r.ok) {
+          j = await r.json();
+          if (j && j.aweme_detail) break;
+          code = "空数据";
+        } else {
+          code = "HTTP " + r.status;
+        }
+      } catch (e) { code = String(e); }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    if (!j || !j.aweme_detail) return JSON.stringify({ok: false, code: code || "无返回"});
     const d = j.aweme_detail || {};
     const v = d.video || {};
     let purl = "";
@@ -163,23 +225,96 @@ DETAIL_JS = """(async () => {
 })()"""
 
 
-def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
-    """用独立登录配置的无头浏览器，在页面里带着 Cookie 请求详情接口"""
-    aid = douyin_id_of(video_url)
-    if not aid:
-        raise RuntimeError("抖音链接里没有视频 id")
-    page = "https://www.douyin.com/video/" + aid
-    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
-    proc = subprocess.Popen(
-        [exe, "--headless=new", "--remote-debugging-port=%d" % port,
-         "--user-data-dir=" + prof, "--no-first-run", "--no-default-browser-check",
-         "--disable-gpu", "--disable-background-networking", page],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+def _free_port(start=9333, end=9400):
+    for p in range(start, end):
+        try:
+            sk = socket.socket()
+            sk.bind(("127.0.0.1", p))
+            sk.close()
+            return p
+        except Exception:
+            continue
+    return start
+
+
+def _clear_profile_locks(prof):
+    """清掉上次浏览器没退干净留下的锁文件"""
+    for rel in ("SingletonLock", "SingletonCookie", "SingletonSocket",
+                "lockfile", os.path.join("Default", "LOCK")):
+        try:
+            p = os.path.join(prof, rel)
+            if os.path.lexists(p):
+                os.remove(p)
+                dlog("已清理锁文件 " + rel)
+        except Exception:
+            pass
+
+
+def _kill_browser_on_profile(prof):
+    """Windows：干掉还在占着这个配置目录的浏览器进程"""
+    if sys.platform != "win32":
+        return
+    try:
+        import subprocess as sp
+        out = sp.run(["wmic", "process", "where",
+                      "name='msedge.exe' or name='chrome.exe'",
+                      "get", "processid,commandline", "/format:list"],
+                     stdout=sp.PIPE, stderr=sp.DEVNULL, timeout=12)
+        text = (out.stdout or b"").decode("utf-8", "replace")
+        cur = os.path.basename(os.path.abspath(prof)).lower()
+        pids = []
+        block = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                if block.get("commandline") and cur in block.get("commandline", "").lower():
+                    pids.append(block.get("processid"))
+                block = {}
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                block[k.lower()] = v.strip()
+        for pid in pids:
+            if pid and pid.isdigit():
+                sp.run(["taskkill", "/F", "/T", "/PID", pid],
+                       stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                dlog("已结束占用配置的浏览器进程 " + pid)
+    except Exception as e:
+        dlog("清理浏览器进程失败: %s" % e)
+
+
+def _browser_args(exe, prof, port, url, mode):
+    args = [exe,
+            "--remote-debugging-port=%d" % port,
+            "--user-data-dir=" + prof,
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-gpu", "--mute-audio", "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-features=Translate,MediaRouter,OptimizationHints"]
+    if mode == "headless":
+        args.append("--headless=new")
+    else:
+        args += ["--window-position=-2400,-2400", "--window-size=1280,900"]
+    args.append(url)
+    return args
+
+
+def _cdp_once(exe, prof, page, aid, timeout, mode):
+    port = _free_port()
+    _clear_profile_locks(prof)
+    _kill_browser_on_profile(prof)
+    creationflags = 0x08000000 if sys.platform == "win32" else 0
+    args = _browser_args(exe, prof, port, page, mode)
+    dlog("启动浏览器(%s) 端口 %d: %s" % (mode, port, " ".join(args[:3])))
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=creationflags)
     sock = None
     try:
         ws = None
-        deadline = time.time() + 25
+        deadline = time.time() + 40
         while time.time() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError("浏览器启动后立刻退出了（退出码 %s）" % proc.returncode)
             try:
                 with urllib.request.urlopen("http://127.0.0.1:%d/json" % port, timeout=2) as r:
                     tabs = json.loads(r.read().decode("utf-8", "replace"))
@@ -187,34 +322,40 @@ def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
                     if t.get("type") == "page" and "douyin.com" in (t.get("url") or ""):
                         ws = t.get("webSocketDebuggerUrl")
                         break
+                if not ws and tabs:
+                    for t in tabs:
+                        if t.get("type") == "page":
+                            ws = t.get("webSocketDebuggerUrl")
+                            break
             except Exception:
-                time.sleep(0.5)
+                pass
             if ws:
                 break
             time.sleep(0.5)
         if not ws:
-            raise RuntimeError("浏览器没有就绪（可能被安全软件拦了）")
+            raise RuntimeError("浏览器调试端口没起来（可能被杀毒软件拦了）")
+        dlog("拿到调试地址 " + ws.split("/")[-1])
         sock = cdp_ws_connect(ws)
         _ws_send(sock, {"id": 1, "method": "Runtime.enable"})
         _ws_recv(sock)
-        # 等页面上下文建好
-        time.sleep(2.0)
+        time.sleep(1.5)
         _ws_send(sock, {"id": 2, "method": "Runtime.evaluate", "params": {
             "expression": DETAIL_JS.replace("__ID__", aid),
             "awaitPromise": True, "returnByValue": True, "userGesture": True}})
-        result = ""
-        end = time.time() + timeout
+        result, end = "", time.time() + timeout
         while time.time() < end:
             msg = _ws_recv(sock)
             if msg.get("id") == 2:
-                val = (((msg.get("result") or {}).get("result") or {}).get("value"))
-                result = val or ""
+                result = (((msg.get("result") or {}).get("result") or {}).get("value")) or ""
                 break
+        dlog("页面返回 %d 字节" % len(result or ""))
         if not result:
             raise RuntimeError("页面没有返回数据")
         data = json.loads(result)
         if not data.get("ok"):
-            raise RuntimeError("抖音返回 %s（多半是没登录或会话过期）" % data.get("code"))
+            if data.get("title"):
+                return data
+            raise RuntimeError("抖音返回 %s" % (data.get("code") or "空数据"))
         if not data.get("play"):
             raise RuntimeError("没找到播放地址")
         return data
@@ -231,9 +372,30 @@ def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     proc.terminate()
+                time.sleep(0.6)
         except Exception:
             pass
 
+
+def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
+    """用独立登录配置的浏览器，在真实页面里请求详情接口取标题/作者/时长/直链"""
+    aid = douyin_id_of(video_url)
+    if not aid:
+        raise RuntimeError("抖音链接里没有视频 id")
+    page = "https://www.douyin.com/video/" + aid
+    dlog("开始解析抖音 %s → %s" % (video_url, aid))
+    last = "未知错误"
+    for mode in ("headless", "window"):
+        try:
+            data = _cdp_once(exe, prof, page, aid, timeout, mode)
+            dlog("解析成功: %s" % json.dumps({k: data.get(k) for k in ("title", "author", "dur")},
+                                            ensure_ascii=False)[:180])
+            return data
+        except Exception as e:
+            last = str(e)
+            dlog("解析失败(%s): %s" % (mode, last))
+            time.sleep(1.0)
+    raise RuntimeError(last)
 
 BG = "#0d1117"
 CARD = "#161b22"
@@ -534,7 +696,19 @@ def find_browser_exe(browser):
 
 
 def login_profile_dir(browser):
-    return os.path.join(app_dir(), "login_" + browser.lower())
+    """登录配置放用户数据目录，不放在程序旁边（避免被更新/清理误删）"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "VDDesktop", "login_" + browser.lower())
+    legacy = os.path.join(app_dir(), "login_" + browser.lower())
+    try:
+        if os.path.isdir(legacy) and not os.path.isdir(d):
+            import shutil
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            shutil.move(legacy, d)
+            dlog("已把登录配置迁移到 " + d)
+    except Exception as e:
+        dlog("迁移登录配置失败: %s" % e)
+    return d
 
 
 class App(object):
@@ -1103,12 +1277,15 @@ class App(object):
             self.set_status(task.idx, "识别失败", 0.0)
             return
         self.set_status(task.idx, "识别中", 0.0)
+        dlog("开始识别 %s" % task.url)
         if "douyin.com" in task.url:
             try:
                 d = self.douyin_resolve(task.url)
             except Exception as e:
                 d = None
-                self.events.put(("log", "抖音网页解析没成功：%s" % (str(e)[:80])))
+                dlog("抖音解析异常: %s" % e)
+                self.events.put(("log", "抖音解析没成功：%s" % (str(e)[:100])))
+                self.events.put(("log", "  详细过程已写入 vd_log.txt（程序同目录），识别不出请把这个文件发我"))
             if d:
                 title = (d.get("title") or task.url).strip()
                 author = d.get("author") or ""
@@ -1140,6 +1317,7 @@ class App(object):
                              (" · " + dur) if dur else "")))
         except Exception as e:
             msg = str(e).splitlines()[0][:100] if str(e) else "未知错误"
+            dlog("yt-dlp 识别失败 %s → %s" % (task.url, msg))
             self.set_status(task.idx, "识别失败", 0.0)
             self.events.put(("log", "✗ %s → %s" % (task.url, msg)))
             if "cookie" in msg.lower() or "login" in msg.lower():
@@ -1384,5 +1562,11 @@ class App(object):
 
 
 if __name__ == "__main__":
+    try:
+        if os.path.exists(LOG_PATH):
+            os.remove(LOG_PATH)
+    except Exception:
+        pass
+    dlog("启动 %s v%s" % (APP_NAME, APP_VER))
     cleanup_leftovers()
     App().run()
