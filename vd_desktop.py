@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.8"
-APP_VC = 18
+APP_VER = "1.9.9"
+APP_VC = 19
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -391,46 +391,75 @@ def _browser_ws(port, timeout=3):
         return None
 
 
-def save_cookies_from_cdp(port):
-    """从浏览器把当前 Cookie（含登录态）存到本地 JSON，供以后直接用"""
-    ws = _browser_ws(port)
-    if not ws:
-        return 0
+def _ws_call(ws_url, method, params=None, tries=60):
+    sock = None
     try:
-        sock = cdp_ws_connect(ws)
+        sock = cdp_ws_connect(ws_url)
     except Exception as e:
-        dlog("取 Cookie 连不上: %s" % e)
-        return 0
+        dlog("连调试端口失败: %s" % e)
+        return None
     try:
-        _ws_send(sock, {"id": 1, "method": "Network.getAllCookies"})
-        out = None
-        for _ in range(60):
+        _ws_send(sock, {"id": 1, "method": method, "params": params or {}})
+        for _ in range(tries):
             try:
                 msg = _ws_recv(sock)
             except Exception:
-                break
+                return None
             if msg.get("id") == 1:
-                out = ((msg.get("result") or {}).get("cookies")) or []
-                break
-        if not out:
-            dlog("浏览器没返回 Cookie")
-            return 0
-        keep = []
-        for c in out:
-            dom = (c.get("domain") or "").lstrip(".")
-            if any(k in dom for k in ("douyin", "bytedance", "toutiao", "ixigua", "bilibili")):
-                keep.append(c)
-        if not keep:
-            keep = out
-        with open(cookies_store_path(), "w", encoding="utf-8") as f:
-            json.dump(keep, f, ensure_ascii=False)
-        dlog("已保存 %d 条 Cookie 到 %s" % (len(keep), cookies_store_path()))
-        return len(keep)
+                return msg
+        return None
     finally:
         try:
             sock.close()
         except Exception:
             pass
+
+
+def _cdp_targets(port):
+    """浏览器级 + 页面级调试地址，哪个能用就用哪个"""
+    out = []
+    b = _browser_ws(port)
+    if b:
+        out.append(b)
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/list" % port, timeout=3) as r:
+            for t in json.loads(r.read().decode("utf-8", "replace")):
+                u = t.get("webSocketDebuggerUrl")
+                if u:
+                    out.append(u)
+    except Exception:
+        pass
+    return out
+
+
+def save_cookies_from_cdp(port):
+    """从浏览器把当前 Cookie（含登录态）存到本地 JSON，供以后直接用"""
+    keep = []
+    for tgt in _cdp_targets(port):
+        for method in ("Network.getAllCookies", "Storage.getCookies"):
+            msg = _ws_call(tgt, method)
+            cks = ((msg or {}).get("result") or {}).get("cookies") or []
+            if cks:
+                for c in cks:
+                    dom = (c.get("domain") or "").lstrip(".")
+                    if any(k in dom for k in ("douyin", "bytedance", "toutiao", "ixigua", "bilibili")):
+                        keep.append(c)
+                if keep:
+                    break
+        if keep:
+            break
+    if not keep:
+        dlog("浏览器没返回可用的 Cookie")
+        return 0
+    try:
+        with open(cookies_store_path(), "w", encoding="utf-8") as f:
+            json.dump(keep, f, ensure_ascii=False)
+        dlog("已保存 %d 条 Cookie 到 %s" % (len(keep), cookies_store_path()))
+        return len(keep)
+    except Exception as e:
+        dlog("写 Cookie 文件失败: %s" % e)
+        return 0
 
 
 def load_cookies():
