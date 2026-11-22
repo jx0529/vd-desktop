@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.6"
-APP_VC = 16
+APP_VER = "1.9.7"
+APP_VC = 17
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -32,10 +32,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 抖音识别前会等页面加载完、ttwid 落进 Cookie，再取标题/作者/时长\n"
-    "2. 取数据失败会自动重试 3 次，不再一次失败就放弃\n"
-    "3. 登录配置识别不出来时，会自动换全新干净配置再试一遍\n"
-    "4. 扫码登录仍只开一个窗口，下载仍进「视频下载器」文件夹"
+    "1. 更新包优先走高速 CDN，不再死等 GitHub 慢线路\n"
+    "2. 更新下载改成 6 段并行，速度更快，界面上显示 MB/s\n"
+    "3. 多线程失败会自动退回单线程，不会卡住\n"
+    "4. 抖音识别、只开一个登录窗口、视频收进「视频下载器」文件夹都不变"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -69,6 +69,117 @@ def dlog(msg):
             f.write(line)
     except Exception:
         pass
+
+
+def _range_probe(url, timeout=12):
+    """探测文件总大小，支持返回 (total, accept_ranges)"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "VDDesktop",
+                                                   "Range": "bytes=0-1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            code = getattr(r, "status", 200) or 200
+            cr = r.headers.get("Content-Range") or ""
+            m = re.search(r"/(\d+)$", cr)
+            total = int(m.group(1)) if m else int(r.headers.get("Content-Length") or 0)
+            return total, (code == 206)
+    except Exception:
+        return 0, False
+
+
+def fast_download(url, dest, emit, threads=6, timeout=20):
+    """多线程分段下载（支持就并行，不支持就单流），emit(已下载字节, 总字节, 速度MB/s)"""
+    import urllib.request
+    total, ranged = _range_probe(url)
+    if total > 4 * 1024 * 1024 and ranged:
+        n = min(threads, max(2, total // (4 * 1024 * 1024)))
+        step = total // n + 1
+        parts = [dest + ".p%d" % i for i in range(n)]
+        done = {}
+        lock = threading.Lock()
+        err = []
+
+        def grab(i, start, end):
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "VDDesktop",
+                    "Range": "bytes=%d-%d" % (start, end)})
+                with urllib.request.urlopen(req, timeout=timeout) as r, open(parts[i], "wb") as f:
+                    while True:
+                        buf = r.read(262144)
+                        if not buf:
+                            break
+                        f.write(buf)
+                        with lock:
+                            done[i] = done.get(i, 0) + len(buf)
+            except Exception as e:
+                err.append(str(e))
+
+        ts = []
+        for i in range(n):
+            st = i * step
+            en = min(total - 1, st + step - 1)
+            t = threading.Thread(target=grab, args=(i, st, en), daemon=True)
+            t.start()
+            ts.append(t)
+        t0 = time.time()
+        last = 0.0
+        while any(t.is_alive() for t in ts):
+            time.sleep(0.3)
+            with lock:
+                got = sum(done.values())
+            now = time.time()
+            if now - last >= 0.4:
+                last = now
+                sp = got / max(0.1, now - t0) / 1048576.0
+                emit(got, total, sp)
+            if err:
+                break
+        for t in ts:
+            t.join(timeout=5)
+        if not err:
+            with open(dest, "wb") as out:
+                for p_ in parts:
+                    with open(p_, "rb") as f:
+                        while True:
+                            buf = f.read(1048576)
+                            if not buf:
+                                break
+                            out.write(buf)
+            for p_ in parts:
+                try:
+                    os.remove(p_)
+                except Exception:
+                    pass
+            size = os.path.getsize(dest)
+            if size >= total - 65536:
+                emit(size, total, size / max(0.1, time.time() - t0) / 1048576.0)
+                return size
+        for p_ in parts:
+            try:
+                os.remove(p_)
+            except Exception:
+                pass
+    # 单流兜底
+    got = 0
+    t0 = time.time()
+    req = urllib.request.Request(url, headers={"User-Agent": "VDDesktop"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        if not total:
+            total = int(r.headers.get("Content-Length") or 0)
+        with open(dest, "wb") as f:
+            last = 0.0
+            while True:
+                buf = r.read(262144)
+                if not buf:
+                    break
+                f.write(buf)
+                got += len(buf)
+                now = time.time()
+                if now - last >= 0.4:
+                    last = now
+                    emit(got, total, got / max(0.1, now - t0) / 1048576.0)
+    return got
 
 
 DOUYIN_ID_RE = re.compile(r'/(?:video|note|share/video)/(\d{15,})')
@@ -1262,7 +1373,7 @@ class App(object):
                 name = info.get("versionName") or ""
                 changes = info.get("changes") or info.get("note") or ""
                 urls = []
-                for k in ("url", "urlCdn", "urlAlt"):
+                for k in ("urlCdn", "url", "urlAlt"):
                     u = info.get(k) or ""
                     if u.startswith("http") and u not in urls:
                         urls.append(u)
@@ -1378,86 +1489,47 @@ class App(object):
         urls = getattr(self, "_upd_urls", None) or [UPDATE_EXE]
 
         def work():
-            import urllib.request
             target_dir = os.path.dirname(sys.executable)
             tmp = os.path.join(target_dir, "_更新包.exe")
             part = tmp + ".part"
             self.events.put(("updprog", 0, "正在连接…"))
             ok = False
             for attempt in range(4):
-                url = urls[attempt % len(urls)]
-                got = 0
-                total = 0
+                url = urls[attempt % len(urls)] if urls else UPDATE_EXE
+                tag = "CDN" if "doubaocdn" in url else "GitHub"
+
+                def emit(got, total, sp, _tag=tag):
+                    if total:
+                        self.events.put(("updprog", min(99, int(got * 100.0 / total)),
+                                         "%s · %.1f / %.1f MB · %.2f MB/s" % (
+                                             _tag, got / 1048576.0, total / 1048576.0, sp)))
+                    else:
+                        self.events.put(("updprog", 0, "%s · 已下载 %.1f MB · %.2f MB/s" % (
+                            _tag, got / 1048576.0, sp)))
+
                 try:
-                    if os.path.exists(part):
-                        got = os.path.getsize(part)
-                    hdr = {"User-Agent": "VDDesktop"}
-                    if got > 0:
-                        hdr["Range"] = "bytes=%d-" % got
-                    req = urllib.request.Request(url, headers=hdr)
-                    with urllib.request.urlopen(req, timeout=25) as r:
-                        code = getattr(r, "status", 200) or 200
-                        cr = r.headers.get("Content-Range") or ""
-                        m = re.search(r"/(\d+)$", cr)
-                        if m:
-                            total = int(m.group(1))
-                        else:
-                            cl = int(r.headers.get("Content-Length") or 0)
-                            total = (cl + got) if (got > 0 and code == 206) else cl
-                        if got > 0 and code != 206:
-                            got = 0  # 服务器不支持续传，从头下
-                        mode = "ab" if got > 0 else "wb"
-                        last_t = time.time()
-                        last_b = got
-                        with open(part, mode) as f:
-                            while True:
-                                buf = r.read(262144)
-                                if not buf:
-                                    break
-                                f.write(buf)
-                                got += len(buf)
-                                now = time.time()
-                                if now - last_t >= 0.4:
-                                    sp = (got - last_b) / (now - last_t) / 1048576.0
-                                    last_t = now
-                                    last_b = got
-                                    if total:
-                                        self.events.put(("updprog",
-                                                         min(99, int(got * 100.0 / total)),
-                                                         "%.1f / %.1f MB · %.2f MB/s" % (
-                                                             got / 1048576.0, total / 1048576.0, sp)))
-                                    else:
-                                        self.events.put(("updprog", 0, "已下载 %.1f MB · %.2f MB/s" % (
-                                            got / 1048576.0, sp)))
+                    got = fast_download(url, part, emit)
                     if got < 1024 * 1024:
                         raise Exception("安装包不完整")
-                    if total and got < total - 65536:
-                        raise Exception("下载被中断，重试中")
                     self.events.put(("updprog", 100, "下载完成，正在替换程序…"))
                     try:
                         if os.path.exists(tmp):
                             os.remove(tmp)
                         os.rename(part, tmp)
                     except Exception:
-                        import shutil
                         shutil.copy2(part, tmp)
                     self.events.put(("apply", tmp))
                     ok = True
                     return
                 except Exception as e:
-                    dlog("更新下载失败(第%d次 %s): %s" % (attempt + 1, url[:60], e))
-                    if os.path.exists(part) and os.path.getsize(part) < 1024 * 1024:
-                        try:
+                    dlog("更新下载失败(第%d次 %s): %s" % (attempt + 1, tag, e))
+                    try:
+                        if os.path.exists(part):
                             os.remove(part)
-                        except Exception:
-                            pass
-                    time.sleep(1.5)
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
             if not ok:
-                try:
-                    if os.path.exists(part):
-                        os.remove(part)
-                except Exception:
-                    pass
                 self.events.put(("updprogfail", "更新错误，请重试"))
 
         threading.Thread(target=work, daemon=True).start()
