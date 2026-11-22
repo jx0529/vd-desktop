@@ -22,17 +22,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.4.0"
-APP_VC = 5
+APP_VER = "1.5.0"
+APP_VC = 6
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 更新提示窗口改成「立即更新 / 稍后」两个按钮，界面统一，不再出现「是 / 否」\n"
-    "2. 更新内容按行分段显示，长文案也不会挤在一起\n"
-    "3. 下载进度写在运行日志里，替换后自动重开\n"
-    "4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义"
+    "1. 更新提示窗口改成「立即更新 / 稍后」，不再出现「是 / 否」\n"
+    "2. 任务表新增「作者」列，识别后显示标题 / 作者 / 时长\n"
+    "3. 全新的应用图标\n"
+    "4. 更新完成后自动删除旧安装包和旧程序备份"
 )
 
 BG = "#0d1117"
@@ -47,6 +47,32 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"\'）)】\]，,;；]+', re.I)
 
 SUPPORT = ("抖音 · 快手 · 小红书 · 微博 · B站 · 西瓜视频 · AcFun · 知乎 · 网易云 · "
            "YouTube · TikTok · Instagram · Twitter/X · Facebook · Vimeo · SoundCloud")
+
+
+def res_path(name):
+    """打包后取 exe 内捆绑资源，源码运行取脚本同目录"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def cleanup_leftovers():
+    """启动时清理上一次更新留下的旧程序与旧安装包"""
+    cur = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else None
+    if not cur:
+        return
+    for p in (cur + ".old", cur + ".bak"):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+    updir = os.path.join(app_dir(), "update_download")
+    try:
+        if os.path.isdir(updir):
+            import shutil
+            shutil.rmtree(updir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def app_dir():
@@ -188,6 +214,12 @@ class App(object):
         self.cancelled = False
 
         self.root = tk.Tk()
+        try:
+            ico = res_path("app.ico")
+            if os.path.isfile(ico):
+                self.root.iconbitmap(ico)
+        except Exception:
+            pass
         self.root.title("%s · 电脑版 %s" % (APP_NAME, APP_VER))
         self.root.geometry("980x760")
         self.root.minsize(820, 620)
@@ -564,7 +596,8 @@ class App(object):
             import shutil
             shutil.copy2(new_exe, cur)
             try:
-                os.remove(new_exe)
+                if os.path.dirname(os.path.abspath(new_exe)) != os.path.dirname(cur):
+                    os.remove(new_exe)
             except Exception:
                 pass
             subprocess.Popen([cur], cwd=os.path.dirname(cur), close_fds=True)
@@ -799,4 +832,5 @@ class App(object):
 
 
 if __name__ == "__main__":
+    cleanup_leftovers()
     App().run()
