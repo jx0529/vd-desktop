@@ -35,10 +35,8 @@ jobs:
           Copy-Item $exe.FullName .\ffmpeg.exe
           .\ffmpeg.exe -version
 
-      - name: 还原图标
+      - name: 检查图标
         run: |
-          $b64 = Get-Content app_icon.b64 -Raw
-          [IO.File]::WriteAllBytes("app.ico", [Convert]::FromBase64String($b64))
           dir app.ico
 
       - name: 打包 exe
