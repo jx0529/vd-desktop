@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.4"
-APP_VC = 14
+APP_VER = "1.9.5"
+APP_VC = 15
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -32,10 +32,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 「扫码登录」只开一个抖音窗口，不再一次冒出好几个\n"
-    "2. 点确定后浏览器是正常关闭的，Cookie 能写进磁盘，登录态才读得到\n"
-    "3. 登录前会校验 Cookie 是否已保存，识别前也不会再多开窗口\n"
-    "4. 修掉登录后仍识别不到标题/作者的问题，下载仍进「视频下载器」文件夹"
+    "1. 「扫码登录」只开一个抖音窗口\n"
+    "2. 关闭浏览器走正常流程，Cookie 才写得进磁盘，登录态读得到\n"
+    "3. 抖音识别失败时改用真实浏览器登录态兜底，命中率更高\n"
+    "4. 日志挪到 %LOCALAPPDATA%\\VDDesktop，桌面不再留 vd_log.txt"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -1488,7 +1488,11 @@ class App(object):
         if self.cookiefile and os.path.isfile(self.cookiefile):
             opts["cookiefile"] = self.cookiefile
         elif self.cookie_profile and os.path.isdir(self.cookie_profile):
-            opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), self.cookie_profile, None, None)
+            # yt-dlp 要的是“用户数据目录”（Default 的上一级），不是 Default 本身
+            root = self.cookie_profile
+            if os.path.basename(os.path.normpath(root)).lower() == "default":
+                root = os.path.dirname(os.path.normpath(root))
+            opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), root, None, None)
         elif self.cookie_browser and self.cookie_browser != "不使用":
             opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
         return opts
@@ -1537,7 +1541,7 @@ class App(object):
                 d = None
                 dlog("抖音解析异常: %s" % e)
                 self.events.put(("log", "抖音解析没成功：%s" % (str(e)[:100])))
-                self.events.put(("log", "  详细过程已写入 vd_log.txt（程序同目录），识别不出请把这个文件发我"))
+                self.events.put(("log", "  详细过程已写入 vd_log.txt（%LOCALAPPDATA%\\VDDesktop），识别不出请把这个文件发我"))
             if d:
                 title = (d.get("title") or task.url).strip()
                 author = d.get("author") or ""
