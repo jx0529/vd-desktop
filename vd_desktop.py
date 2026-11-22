@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.7"
-APP_VC = 17
+APP_VER = "1.9.8"
+APP_VC = 18
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -32,10 +32,11 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 更新包优先走高速 CDN，不再死等 GitHub 慢线路\n"
-    "2. 更新下载改成 6 段并行，速度更快，界面上显示 MB/s\n"
-    "3. 多线程失败会自动退回单线程，不会卡住\n"
-    "4. 抖音识别、只开一个登录窗口、视频收进「视频下载器」文件夹都不变"
+    "1. 登录一次就记住：Cookie 存本机，重启或更新后不用再登录\n"
+    "2. 识别时会自动带上保存的登录态，抖音标题/作者能正常取到\n"
+    "3. 更新进度多了剩余时间，显示成「剩 1:20」\n"
+    "4. 更新失败可直接用浏览器下载最新版\n"
+    "5. 更新包 CDN 优先 + 6 段并行，速度快很多"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -375,6 +376,92 @@ def _clear_profile_locks(prof):
             pass
 
 
+def cookies_store_path():
+    """登录 Cookie 的持久化文件（跟程序无关，更新/重启都不会丢）"""
+    return os.path.join(_log_dir(), "cookies.json")
+
+
+def _browser_ws(port, timeout=3):
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace")).get("webSocketDebuggerUrl")
+    except Exception:
+        return None
+
+
+def save_cookies_from_cdp(port):
+    """从浏览器把当前 Cookie（含登录态）存到本地 JSON，供以后直接用"""
+    ws = _browser_ws(port)
+    if not ws:
+        return 0
+    try:
+        sock = cdp_ws_connect(ws)
+    except Exception as e:
+        dlog("取 Cookie 连不上: %s" % e)
+        return 0
+    try:
+        _ws_send(sock, {"id": 1, "method": "Network.getAllCookies"})
+        out = None
+        for _ in range(60):
+            try:
+                msg = _ws_recv(sock)
+            except Exception:
+                break
+            if msg.get("id") == 1:
+                out = ((msg.get("result") or {}).get("cookies")) or []
+                break
+        if not out:
+            dlog("浏览器没返回 Cookie")
+            return 0
+        keep = []
+        for c in out:
+            dom = (c.get("domain") or "").lstrip(".")
+            if any(k in dom for k in ("douyin", "bytedance", "toutiao", "ixigua", "bilibili")):
+                keep.append(c)
+        if not keep:
+            keep = out
+        with open(cookies_store_path(), "w", encoding="utf-8") as f:
+            json.dump(keep, f, ensure_ascii=False)
+        dlog("已保存 %d 条 Cookie 到 %s" % (len(keep), cookies_store_path()))
+        return len(keep)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def load_cookies():
+    try:
+        with open(cookies_store_path(), "r", encoding="utf-8") as f:
+            cks = json.load(f)
+        return [c for c in cks if c.get("name") and c.get("domain")] if cks else []
+    except Exception:
+        return []
+
+
+def write_netscape_cookies(cks, path):
+    """把 JSON Cookie 转成 yt-dlp 能读的 cookies.txt"""
+    try:
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in cks:
+            dom = c.get("domain") or ""
+            flag = "TRUE" if dom.startswith(".") else "FALSE"
+            path_ = c.get("path") or "/"
+            secure = "TRUE" if c.get("secure") else "FALSE"
+            exp = c.get("expires")
+            exp = int(exp) if isinstance(exp, (int, float)) and exp > 0 else 0
+            lines.append("\t".join([dom, flag, path_, secure, str(exp), c.get("name", ""),
+                                    c.get("value", "")]))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except Exception as e:
+        dlog("写 cookies.txt 失败: %s" % e)
+        return False
+
+
 def _cookies_db_path(prof):
     """Edge/Chrome 的 Cookie 数据库位置（新版在 Default\\Network\\Cookies）"""
     for rel in (os.path.join("Default", "Network", "Cookies"),
@@ -477,6 +564,14 @@ def _cdp_once(exe, prof, page, aid, timeout, mode):
         sock = cdp_ws_connect(ws)
         _ws_send(sock, {"id": 1, "method": "Runtime.enable"})
         _ws_recv(sock)
+        saved = load_cookies()
+        if saved:
+            try:
+                _ws_send(sock, {"id": 4, "method": "Network.setCookies",
+                                "params": {"cookies": saved}})
+                dlog("已注入 %d 条本地 Cookie" % len(saved))
+            except Exception as e:
+                dlog("注入 Cookie 失败: %s" % e)
         # 等页面真正加载完、ttwid 落到 Cookie 里（这一步以前只等 1.5 秒，网络慢就 403）
         ready = False
         end = time.time() + 20
@@ -933,6 +1028,10 @@ class App(object):
         self._dy_info_cache = {}
         self._login_proc = None
         self.cookiefile = self.cfg.get("cookiefile") or ""
+        if not self.cookiefile:
+            ctxt = os.path.join(_log_dir(), "cookies.txt")
+            if os.path.isfile(ctxt) and os.path.getsize(ctxt) > 200:
+                self.cookiefile = ctxt
         self.tasks = []
         self.jobs = queue.Queue()
         self.events = queue.Queue()
@@ -1125,6 +1224,11 @@ class App(object):
     def cookie_hint_text(self):
         if self.cookiefile:
             return "Cookie 文件: " + self.cookiefile
+        try:
+            if len(load_cookies()) > 10:
+                return "已登录（Cookie 已保存在本机，重启/更新都不用再登录）"
+        except Exception:
+            pass
         if self.cookie_profile and os.path.isdir(self.cookie_profile):
             return "已登录（%s），Cookie 会自动读取" % self.cookie_browser
         if self.cookie_browser != "不使用":
@@ -1203,6 +1307,13 @@ class App(object):
             self.logline("已取消，登录后仍可再点「扫码登录」")
             self._kill_login()
             return
+        # 先把登录后的 Cookie 存下来（更新/重启都不用再登）
+        n_ck = 0
+        try:
+            if getattr(self, "_login_port", 0):
+                n_ck = save_cookies_from_cdp(self._login_port)
+        except Exception as e:
+            dlog("保存 Cookie 异常: %s" % e)
         self._close_login_browser()
         dflt = os.path.join(used_prof, "Default")
         self.cookie_profile = dflt if os.path.isdir(dflt) else used_prof
@@ -1211,11 +1322,17 @@ class App(object):
         self.cookiefile = ""
         save_config(self.cfg)
         self.ck_hint.config(text=self.cookie_hint_text())
-        ck = _cookies_db_path(used_prof)
-        if ck and os.path.getsize(ck) > 4096:
-            self.logline("登录完成，Cookie 已保存（%s KB），直接点「开始下载」" % (os.path.getsize(ck) // 1024))
+        cks = load_cookies()
+        if cks:
+            txt = os.path.join(_log_dir(), "cookies.txt")
+            if write_netscape_cookies(cks, txt):
+                self.cookiefile = txt
+                self.cfg["cookiefile"] = txt
+                save_config(self.cfg)
+                self.ck_hint.config(text=self.cookie_hint_text())
+            self.logline("登录完成，已保存 %d 条 Cookie（存本机，更新或重启都不用再登录）" % len(cks))
         else:
-            self.logline("登录窗口已关闭，但 Cookie 看起来还没写盘；如果识别失败请再点一次「扫码登录」")
+            self.logline("登录窗口已关闭，但没取到 Cookie；识别失败的话请再点一次「扫码登录」")
 
     def _spawn_login_browser(self, exe, prof, browser):
         """启动唯一的登录窗口（独立配置 + 调试端口，方便优雅关闭让 Cookie 落盘）
@@ -1499,10 +1616,14 @@ class App(object):
                 tag = "CDN" if "doubaocdn" in url else "GitHub"
 
                 def emit(got, total, sp, _tag=tag):
+                    eta = ""
+                    if total and sp > 0.01:
+                        left = max(0, int((total - got) / 1048576.0 / sp))
+                        eta = " · 剩 %d:%02d" % (left // 60, left % 60)
                     if total:
                         self.events.put(("updprog", min(99, int(got * 100.0 / total)),
-                                         "%s · %.1f / %.1f MB · %.2f MB/s" % (
-                                             _tag, got / 1048576.0, total / 1048576.0, sp)))
+                                         "%s · %.1f / %.1f MB · %.2f MB/s%s" % (
+                                             _tag, got / 1048576.0, total / 1048576.0, sp, eta)))
                     else:
                         self.events.put(("updprog", 0, "%s · 已下载 %.1f MB · %.2f MB/s" % (
                             _tag, got / 1048576.0, sp)))
@@ -1916,7 +2037,13 @@ class App(object):
                         self.plbl.config(text="0%")
                     except Exception:
                         pass
-                    messagebox.showwarning("检查更新", ev[1])
+                    if messagebox.askyesno("检查更新", ev[1] + "\n\n要不要用浏览器直接下载最新版？"):
+                        u = (getattr(self, "_upd_urls", None) or [UPDATE_EXE])[0]
+                        try:
+                            import webbrowser
+                            webbrowser.open(u)
+                        except Exception:
+                            pass
                 elif kind == "update":
                     self.prompt_update(ev[1], ev[2], ev[3])
                 elif kind == "uptodate":
