@@ -1,1 +1,1 @@
-{"versionCode":5,"versionName":"1.4.0","changes":"1. 更新提示改成「立即更新 / 稍后」，不再出现「是 / 否」\n2. 任务表新增「作者」列，识别后显示标题 / 作者 / 时长\n3. 抖音走已登录 Cookie 解析，识别信息与手机端一致\n4. 画质仍支持最高画质 / 1080p / 720p，目录可自定义","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{"versionCode":6,"versionName":"1.5.0","changes":"1. 更新提示改成「立即更新 / 稍后」，不再出现「是 / 否」\n2. 任务表新增「作者」列，识别后显示标题 / 作者 / 时长\n3. 全新的应用图标（任务栏和窗口都有）\n4. 更新完成后自动删除旧安装包和旧程序备份","url":"https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
