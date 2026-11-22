@@ -22,17 +22,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.5.0"
-APP_VC = 6
+APP_VER = "1.6.0"
+APP_VC = 7
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 更新提示窗口改成「立即更新 / 稍后」，不再出现「是 / 否」\n"
-    "2. 任务表新增「作者」列，识别后显示标题 / 作者 / 时长\n"
+    "1. 「识别链接」现在真的会读出标题 / 作者 / 时长，不再只显示链接\n"
+    "2. 识别完成状态从「等待」变成「待下载」，可以直接点开始下载\n"
     "3. 全新的应用图标\n"
-    "4. 更新完成后自动删除旧安装包和旧程序备份"
+    "4. 更新后自动删除旧安装包和旧程序备份"
 )
 
 BG = "#0d1117"
@@ -647,6 +647,49 @@ class App(object):
             messagebox.showinfo(APP_NAME, "没识别到链接")
             return
         self._fill_rows(urls)
+        self.logline("识别中，正在读取标题 / 作者 / 时长…")
+        for t in self.tasks:
+            threading.Thread(target=self._recognize_one,
+                             args=(t,), daemon=True).start()
+
+    def _cookie_opts(self, opts):
+        if self.cookiefile and os.path.isfile(self.cookiefile):
+            opts["cookiefile"] = self.cookiefile
+        elif self.cookie_profile and os.path.isdir(self.cookie_profile):
+            opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), self.cookie_profile, None, None)
+        elif self.cookie_browser and self.cookie_browser != "不使用":
+            opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
+        return opts
+
+    def _recognize_one(self, task):
+        """只读解析：拿到标题、作者、时长，不下载"""
+        try:
+            from yt_dlp import YoutubeDL
+        except Exception as e:
+            self.events.put(("log", "✗ 缺少 yt-dlp 组件: %s" % e))
+            self.set_status(task.idx, "识别失败", 0.0)
+            return
+        self.set_status(task.idx, "识别中", 0.0)
+        opts = self._cookie_opts({"quiet": True, "noprogress": True,
+                                  "no_warnings": False, "retries": 3})
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(task.url, download=False)
+            info = info or {}
+            title = info.get("title") or task.url
+            author = info.get("uploader") or info.get("channel") or info.get("creator") or ""
+            dur = human_time(info.get("duration"))
+            self.events.put(("meta", task.idx, title, author, dur))
+            self.set_status(task.idx, "待下载", 0.0)
+            self.events.put(("log", "✓ %s%s%s" % (title,
+                             (" · " + author) if author else "",
+                             (" · " + dur) if dur else "")))
+        except Exception as e:
+            msg = str(e).splitlines()[0][:100] if str(e) else "未知错误"
+            self.set_status(task.idx, "识别失败", 0.0)
+            self.events.put(("log", "✗ %s → %s" % (task.url, msg)))
+            if "cookie" in msg.lower() or "login" in msg.lower():
+                self.events.put(("log", "  提示：抖音要登录态，点「扫码登录」登录一次再识别"))
 
     def _fill_rows(self, urls):
         for i in self.tree.get_children():
@@ -743,12 +786,7 @@ class App(object):
             opts["format_sort"] = ["res", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"]
             if ff:
                 opts["ffmpeg_location"] = ff
-            if self.cookiefile and os.path.isfile(self.cookiefile):
-                opts["cookiefile"] = self.cookiefile
-            elif self.cookie_profile and os.path.isdir(self.cookie_profile):
-                opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), self.cookie_profile, None, None)
-            elif self.cookie_browser and self.cookie_browser != "不使用":
-                opts["cookiesfrombrowser"] = (self.cookie_browser.lower(), None, None, None)
+            self._cookie_opts(opts)
 
             try:
                 self.set_status(idx, "解析中", 0.0)
