@@ -1,6 +1,6 @@
 {
- "versionCode": 16,
- "versionName": "1.9.6",
- "changes": "1. 识别前等页面加载完、ttwid 落 Cookie\n2. 取数据失败自动重试 3 次\n3. 登录态识别不出来时自动换干净配置再试\n4. 扫码登录仍只开一个窗口",
+ "versionCode": 17,
+ "versionName": "1.9.7",
+ "changes": "1. 更新包优先走高速 CDN，不死等 GitHub\n2. 下载改成 6 段并行，界面显示 MB/s\n3. 多线程失败自动退回单线程\n4. 抖音识别、单窗口登录保持不变",
  "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
