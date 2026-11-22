@@ -2,5 +2,6 @@
  "versionCode": 20,
  "versionName": "1.9.10",
  "changes": "1. 登录一次就记住，Cookie 存本机，重启/更新不用再登录\n2. 识别自动带登录态，抖音标题作者正常\n3. 更新进度显示剩余时间\n4. 更新失败可一键用浏览器下载\n5. CDN 优先 + 6 段并行下载\n6. 右侧滚动条改深色，与背景一致\n7. 启动预加载解析组件，不再报 base_library.zip 找不到\n8. 登录前强清占用配置的浏览器进程，减少退出码 21",
- "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe",
+ "urlCdn": "https://aka.doubaocdn.com/s/JQdWUgvdAS"
 }
