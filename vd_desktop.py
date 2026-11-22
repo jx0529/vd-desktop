@@ -22,18 +22,19 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.0"
-APP_VC = 10
+APP_VER = "1.9.1"
+APP_VC = 11
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
+SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
 UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 修复自动更新进度条一直 0% 的问题，现在显示百分比和已下载大小\n"
-    "2. 抖音分享短链能自动跟到视频，识别出标题、作者、时长、点赞\n"
-    "3. 登录配置放在用户数据目录，更新时不会丢登录态\n"
-    "4. 识别失败会把原因写进 vd_log.txt"
+    "1. 下载的视频统一放进「视频下载器」文件夹，不再和别的文件混在一起\n"
+    "2. 自动更新进度条显示百分比和已下载大小\n"
+    "3. 抖音分享短链能识别出标题、作者、时长、点赞\n"
+    "4. 登录配置在用户数据目录，更新后不用重新登录"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -1242,7 +1243,9 @@ class App(object):
             self.logline("保存目录: " + d)
 
     def open_dir(self):
-        d = self.dir_var.get()
+        d = os.path.join(self.dir_var.get(), SUB_DIR)
+        if not os.path.isdir(d):
+            d = self.dir_var.get()
         if not os.path.isdir(d):
             messagebox.showwarning(APP_NAME, "目录不存在：" + d)
             return
@@ -1392,7 +1395,13 @@ class App(object):
             except Exception as e:
                 messagebox.showerror(APP_NAME, "建不了目录: %s" % e)
                 return
-        self.outdir = outdir
+        # 文件统一收进「视频下载器」子文件夹，避免和别的文件混在一起
+        self.outdir = os.path.join(outdir, SUB_DIR)
+        try:
+            os.makedirs(self.outdir, exist_ok=True)
+        except Exception as e:
+            self.outdir = outdir
+            self.logline("建子目录失败，直接存在所选目录: %s" % e)
         self.cfg["outdir"] = outdir
         self.quality = self.q_cb.get()
         self.cfg["quality"] = self.quality

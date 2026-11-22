@@ -1,1 +1,1 @@
-{"versionCode": 10, "versionName": "1.9.0", "changes": "1. 自动更新进度条修好了，会显示百分比和已下载大小（此前一直卡 0%）\n2. 抖音分享短链能自动识别到视频，显示标题、作者、时长、点赞\n3. 登录配置移到用户数据目录，更新后不用重新登录\n4. 识别失败会把原因写进程序目录的 vd_log.txt", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{"versionCode": 11, "versionName": "1.9.1", "changes": "1. 下载的视频统一放进「视频下载器」文件夹\n2. 自动更新进度条修复，显示百分比和大小\n3. 抖音短链可识别标题/作者/时长/点赞", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
