@@ -22,8 +22,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.1"
-APP_VC = 11
+APP_VER = "1.9.2"
+APP_VC = 12
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -31,10 +31,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 下载的视频统一放进「视频下载器」文件夹，不再和别的文件混在一起\n"
-    "2. 自动更新进度条显示百分比和已下载大小\n"
-    "3. 抖音分享短链能识别出标题、作者、时长、点赞\n"
-    "4. 登录配置在用户数据目录，更新后不用重新登录"
+    "1. 更新窗口显示的是要装的新版本号，不再显示旧的\n"
+    "2. 更新进度会动：显示百分比、已下载/总大小和速度，支持断点续传\n"
+    "3. 主下载地址连不上会自动换备用地址，不再一直卡 0%\n"
+    "4. 不再在软件旁边（桌面）生成 vd_log.txt，日志改存用户数据目录"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -44,14 +44,25 @@ import struct
 import urllib.request
 import urllib.error
 
-LOG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)),
-    "vd_log.txt")
+def _log_dir():
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "VDDesktop")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+# 日志放用户数据目录，不写在程序旁边（桌面），避免留垃圾文件
+LOG_PATH = os.path.join(_log_dir(), "vd_log.txt")
 
 
 def dlog(msg):
     """把关键步骤写进日志文件，出问题时用户直接把文件发过来"""
     try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 3 * 1024 * 1024:
+            os.remove(LOG_PATH)
         line = "%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line)
@@ -564,9 +575,12 @@ def cleanup_leftovers():
     cur = os.path.abspath(sys.executable) if getattr(sys, "frozen", False) else None
     if not cur:
         return
+    side = os.path.dirname(cur)
     for p in (cur + ".old", cur + ".bak",
-              os.path.join(os.path.dirname(cur), "_更新包.exe"),
-              os.path.join(os.path.dirname(cur), "VideoDownloader_new.exe")):
+              os.path.join(side, "_更新包.exe"),
+              os.path.join(side, "_更新包.exe.part"),
+              os.path.join(side, "VideoDownloader_new.exe"),
+              os.path.join(side, "vd_log.txt")):  # 旧版遗留的日志，别再留在桌面
 
         try:
             if os.path.exists(p):
@@ -1053,6 +1067,14 @@ class App(object):
                 vc = int(info.get("versionCode") or 0)
                 name = info.get("versionName") or ""
                 changes = info.get("changes") or info.get("note") or ""
+                urls = []
+                for k in ("url", "urlCdn", "urlAlt"):
+                    u = info.get(k) or ""
+                    if u.startswith("http") and u not in urls:
+                        urls.append(u)
+                if not urls:
+                    urls = [UPDATE_EXE]
+                self._upd_urls = urls
                 if vc > APP_VC:
                     self.events.put(("update", vc, name, changes))
                 else:
@@ -1063,6 +1085,7 @@ class App(object):
 
     def prompt_update(self, vc, name, changes):
         """自绘更新窗口：立即更新 / 稍后"""
+        self._new_ver = name or ""
         top = tk.Toplevel(self.root)
         top.title("发现新版本 %s" % name)
         top.configure(bg=BG)
@@ -1115,7 +1138,7 @@ class App(object):
         if alive:
             try:
                 self._updbar["value"] = 0
-                self._updlbl.config(text="0%")
+                self._updlbl.config(text="0%  正在连接…")
                 stale.lift()
             except Exception:
                 pass
@@ -1126,15 +1149,17 @@ class App(object):
         try:
             top = tk.Toplevel(self.root)
             self._updwin = top
-            top.title("正在下载新版本")
+            top.title("正在下载新版本 %s" % (getattr(self, "_new_ver", "") or ""))
+
             top.configure(bg=BG)
             top.resizable(False, False)
             top.transient(self.root)
-            tk.Label(top, text="正在下载新版本 %s……" % APP_VER, bg=BG, fg=FG,
+            tk.Label(top, text="正在下载新版本 %s……" % (getattr(self, "_new_ver", "") or APP_VER),
+                     bg=BG, fg=FG,
                      font=("Microsoft YaHei UI", 11)).pack(pady=(18, 8))
             self._updbar = ttk.Progressbar(top, mode="determinate", maximum=100)
             self._updbar.pack(fill="x", padx=26)
-            self._updlbl = tk.Label(top, text="0%", bg=BG, fg=SUB, font=("Consolas", 10))
+            self._updlbl = tk.Label(top, text="0%  正在连接…", bg=BG, fg=SUB, font=("Consolas", 10))
             self._updlbl.pack(pady=(6, 0))
             top.protocol("WM_DELETE_WINDOW", lambda: None)
             top.update_idletasks()
@@ -1156,62 +1181,91 @@ class App(object):
 
     def download_update(self):
         self.show_upd_progress()
+        urls = getattr(self, "_upd_urls", None) or [UPDATE_EXE]
 
         def work():
             import urllib.request
             target_dir = os.path.dirname(sys.executable)
             tmp = os.path.join(target_dir, "_更新包.exe")
-            last = None
-            for attempt in range(3):
+            part = tmp + ".part"
+            self.events.put(("updprog", 0, "正在连接…"))
+            ok = False
+            for attempt in range(4):
+                url = urls[attempt % len(urls)]
+                got = 0
+                total = 0
                 try:
-                    total = 0
-                    try:
-                        rq = urllib.request.Request(UPDATE_EXE,
-                                                    headers={"User-Agent": "VDDesktop",
-                                                             "Range": "bytes=0-0"})
-                        with urllib.request.urlopen(rq, timeout=30) as r0:
-                            cr = r0.headers.get("Content-Range") or ""
-                            m = re.search(r'/(\d+)$', cr)
-                            if m:
-                                total = int(m.group(1))
-                            else:
-                                total = int(r0.headers.get("Content-Length") or 0)
-                    except Exception:
-                        pass
-                    req = urllib.request.Request(UPDATE_EXE, headers={"User-Agent": "VDDesktop"})
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        if not total:
-                            total = int(r.headers.get("Content-Length") or 0)
-                        got = 0
-                        last_put = 0.0
-                        with open(tmp, "wb") as f:
+                    if os.path.exists(part):
+                        got = os.path.getsize(part)
+                    hdr = {"User-Agent": "VDDesktop"}
+                    if got > 0:
+                        hdr["Range"] = "bytes=%d-" % got
+                    req = urllib.request.Request(url, headers=hdr)
+                    with urllib.request.urlopen(req, timeout=25) as r:
+                        code = getattr(r, "status", 200) or 200
+                        cr = r.headers.get("Content-Range") or ""
+                        m = re.search(r"/(\d+)$", cr)
+                        if m:
+                            total = int(m.group(1))
+                        else:
+                            cl = int(r.headers.get("Content-Length") or 0)
+                            total = (cl + got) if (got > 0 and code == 206) else cl
+                        if got > 0 and code != 206:
+                            got = 0  # 服务器不支持续传，从头下
+                        mode = "ab" if got > 0 else "wb"
+                        last_t = time.time()
+                        last_b = got
+                        with open(part, mode) as f:
                             while True:
-                                buf = r.read(65536)
+                                buf = r.read(262144)
                                 if not buf:
                                     break
                                 f.write(buf)
                                 got += len(buf)
                                 now = time.time()
-                                if now - last_put > 0.25:
-                                    last_put = now
+                                if now - last_t >= 0.4:
+                                    sp = (got - last_b) / (now - last_t) / 1048576.0
+                                    last_t = now
+                                    last_b = got
                                     if total:
-                                        self.events.put(("updprog", min(99, int(got * 100.0 / total)),
-                                                         "%.1f / %.1f MB" % (got / 1048576.0, total / 1048576.0)))
+                                        self.events.put(("updprog",
+                                                         min(99, int(got * 100.0 / total)),
+                                                         "%.1f / %.1f MB · %.2f MB/s" % (
+                                                             got / 1048576.0, total / 1048576.0, sp)))
                                     else:
-                                        self.events.put(("updprog", 0, "已下载 %.1f MB" % (got / 1048576.0)))
+                                        self.events.put(("updprog", 0, "已下载 %.1f MB · %.2f MB/s" % (
+                                            got / 1048576.0, sp)))
                     if got < 1024 * 1024:
-                        raise Exception("下载的安装包不完整")
-                    self.events.put(("apply", tmp))
-                    return
-                except Exception as e:
-                    last = e
+                        raise Exception("安装包不完整")
+                    if total and got < total - 65536:
+                        raise Exception("下载被中断，重试中")
+                    self.events.put(("updprog", 100, "下载完成，正在替换程序…"))
                     try:
                         if os.path.exists(tmp):
                             os.remove(tmp)
+                        os.rename(part, tmp)
                     except Exception:
-                        pass
-                    time.sleep(2)
-            self.events.put(("updprogfail", "更新错误，请重试"))
+                        import shutil
+                        shutil.copy2(part, tmp)
+                    self.events.put(("apply", tmp))
+                    ok = True
+                    return
+                except Exception as e:
+                    dlog("更新下载失败(第%d次 %s): %s" % (attempt + 1, url[:60], e))
+                    if os.path.exists(part) and os.path.getsize(part) < 1024 * 1024:
+                        try:
+                            os.remove(part)
+                        except Exception:
+                            pass
+                    time.sleep(1.5)
+            if not ok:
+                try:
+                    if os.path.exists(part):
+                        os.remove(part)
+                except Exception:
+                    pass
+                self.events.put(("updprogfail", "更新错误，请重试"))
+
         threading.Thread(target=work, daemon=True).start()
 
     def apply_update(self, new_exe):

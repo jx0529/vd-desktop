@@ -1,1 +1,6 @@
-{"versionCode": 11, "versionName": "1.9.1", "changes": "1. 下载的视频统一放进「视频下载器」文件夹\n2. 自动更新进度条修复，显示百分比和大小\n3. 抖音短链可识别标题/作者/时长/点赞", "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"}
+{
+ "versionCode": 12,
+ "versionName": "1.9.2",
+ "changes": "1. 更新窗口显示要装的新版本号\n2. 更新进度显示百分比/大小/速度，支持断点续传\n3. 主地址失败自动换备用地址，不再卡 0%\n4. 不再在桌面生成 vd_log.txt",
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
+}
