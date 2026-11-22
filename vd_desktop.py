@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.9"
-APP_VC = 19
+APP_VER = "1.9.10"
+APP_VC = 20
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -37,7 +37,9 @@ THIS_VERSION_NOTES = (
     "3. 更新进度多了剩余时间，显示成「剩 1:20」\n"
     "4. 更新失败可直接用浏览器下载最新版\n"
     "5. 更新包 CDN 优先 + 6 段并行，速度快很多\n"
-    "6. 右侧滚动条改成深色，和背景一致，不再突兀"
+    "6. 右侧滚动条改成深色，和背景一致，不再突兀\n"
+    "7. 启动时预先加载解析组件，运行中不再报 base_library.zip 找不到\n"
+    "8. 登录窗口启动前强清占用配置的浏览器进程，减少「退出码 21」"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -537,6 +539,24 @@ def _kill_browser_on_profile(prof):
                 dlog("已结束占用配置的浏览器进程 " + pid)
     except Exception as e:
         dlog("清理浏览器进程失败: %s" % e)
+    _kill_by_cmdline(os.path.basename(os.path.abspath(prof)))
+
+
+def _kill_by_cmdline(kw):
+    """PowerShell 按命令行关键字强杀（wmic 在新系统上常不可用）"""
+    if sys.platform != "win32" or not kw:
+        return
+    try:
+        import subprocess as sp
+        cmd = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' "
+               "-and ($_.Name -eq 'msedge.exe' -or $_.Name -eq 'chrome.exe') } | "
+               "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }") % kw
+        sp.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+               stdout=sp.DEVNULL, stderr=sp.DEVNULL, timeout=20,
+               creationflags=0x08000000)
+        dlog("已按命令行清理占用 %s 的浏览器" % kw)
+    except Exception as e:
+        dlog("PowerShell 清理失败: %s" % e)
 
 
 def _browser_args(exe, prof, port, url, mode):
@@ -864,6 +884,22 @@ def res_path(name):
     """打包后取 exe 内捆绑资源，源码运行取脚本同目录"""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
+
+
+def _warm_imports():
+    """把 yt-dlp 和它要用的标准库先在启动时导进内存。
+    打包成单文件后，程序跑在系统临时目录里；如果中途被系统/清理软件删掉，
+    再 import 就会报 base_library.zip 找不到。提前导入可以避免这个问题。"""
+    mods = ["yt_dlp", "yt_dlp.YoutubeDL", "yt_dlp.utils", "http.cookiejar", "urllib.request",
+            "email.parser", "mimetypes", "hashlib", "hmac", "struct", "json", "re",
+            "subprocess", "socket", "ssl", "sqlite3", "tempfile", "shutil", "random",
+            "mutagen", "brotli", "certifi", "requests", "websockets", "xml.etree.ElementTree",
+            "unicodedata", "base64", "binascii", "codecs", "collections", "datetime"]
+    for m in mods:
+        try:
+            __import__(m)
+        except Exception as e:
+            dlog("预热 %s 失败: %s" % (m, e))
 
 
 def cleanup_leftovers():
@@ -1807,7 +1843,8 @@ class App(object):
         try:
             from yt_dlp import YoutubeDL
         except Exception as e:
-            self.events.put(("log", "✗ 缺少 yt-dlp 组件: %s" % e))
+            self.events.put(("log", "✗ 解析组件没加载成功: %s" % e))
+            self.events.put(("log", "  这是程序临时文件被系统清理了，关掉程序重新打开一次就好（登录状态不会丢）"))
             self.set_status(task.idx, "识别失败", 0.0)
             return
         self.set_status(task.idx, "识别中", 0.0)
@@ -1920,7 +1957,8 @@ class App(object):
         try:
             from yt_dlp import YoutubeDL
         except Exception as e:
-            self.events.put(("log", "✗ 缺少 yt-dlp 组件: %s" % e))
+            self.events.put(("log", "✗ 解析组件没加载成功: %s" % e))
+            self.events.put(("log", "  这是程序临时文件被系统清理了，关掉程序重新打开一次就好（登录状态不会丢）"))
             self._worker_done()
             return
         ff = find_ffmpeg()
@@ -2122,4 +2160,5 @@ if __name__ == "__main__":
         pass
     dlog("启动 %s v%s" % (APP_NAME, APP_VER))
     cleanup_leftovers()
+    _warm_imports()
     App().run()
