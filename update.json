@@ -1,6 +1,6 @@
 {
- "versionCode": 14,
- "versionName": "1.9.4",
- "changes": "1. 扫码登录只开一个窗口，不再冒好几个\n2. 登录后浏览器正常关闭，Cookie 能落盘，登录态读得到\n3. 登录前校验 Cookie 是否保存成功\n4. 修复登录后仍识别不到标题/作者",
+ "versionCode": 15,
+ "versionName": "1.9.5",
+ "changes": "1. 扫码登录只开一个窗口\n2. 关闭浏览器走正常流程，Cookie 能落盘\n3. 抖音识别失败时用真实登录态兜底\n4. 桌面不再留 vd_log.txt",
  "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
