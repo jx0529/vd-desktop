@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_NAME = "视频下载器"
-APP_VER = "1.9.5"
-APP_VC = 15
+APP_VER = "1.9.6"
+APP_VC = 16
 UPDATE_MANIFEST = "https://raw.githubusercontent.com/jx0529/vd-desktop/main/update.json"
 APP_EXE_NAME = "视频下载器.exe"
 SUB_DIR = "视频下载器"  # 下载文件统一收进这个子文件夹
@@ -32,10 +32,10 @@ UPDATE_EXE = "https://github.com/jx0529/vd-desktop/releases/latest/download/Vide
 AUTHOR = "Cangora 制作"
 
 THIS_VERSION_NOTES = (
-    "1. 「扫码登录」只开一个抖音窗口\n"
-    "2. 关闭浏览器走正常流程，Cookie 才写得进磁盘，登录态读得到\n"
-    "3. 抖音识别失败时改用真实浏览器登录态兜底，命中率更高\n"
-    "4. 日志挪到 %LOCALAPPDATA%\\VDDesktop，桌面不再留 vd_log.txt"
+    "1. 抖音识别前会等页面加载完、ttwid 落进 Cookie，再取标题/作者/时长\n"
+    "2. 取数据失败会自动重试 3 次，不再一次失败就放弃\n"
+    "3. 登录配置识别不出来时，会自动换全新干净配置再试一遍\n"
+    "4. 扫码登录仍只开一个窗口，下载仍进「视频下载器」文件夹"
 )
 
 # ---------- 抖音：用本机浏览器（CDP）在登录态里取视频信息 ----------
@@ -366,20 +366,53 @@ def _cdp_once(exe, prof, page, aid, timeout, mode):
         sock = cdp_ws_connect(ws)
         _ws_send(sock, {"id": 1, "method": "Runtime.enable"})
         _ws_recv(sock)
-        time.sleep(1.5)
-        _ws_send(sock, {"id": 2, "method": "Runtime.evaluate", "params": {
-            "expression": DETAIL_JS.replace("__ID__", aid),
-            "awaitPromise": True, "returnByValue": True, "userGesture": True}})
-        result, end = "", time.time() + timeout
+        # 等页面真正加载完、ttwid 落到 Cookie 里（这一步以前只等 1.5 秒，网络慢就 403）
+        ready = False
+        end = time.time() + 20
         while time.time() < end:
+            _ws_send(sock, {"id": 3, "method": "Runtime.evaluate", "params": {
+                "expression": "document.readyState + '|' + (document.cookie.indexOf('ttwid')>=0 ? '1' : '0')",
+                "returnByValue": True}})
             msg = _ws_recv(sock)
-            if msg.get("id") == 2:
-                result = (((msg.get("result") or {}).get("result") or {}).get("value")) or ""
+            val = (((msg.get("result") or {}).get("result") or {}).get("value")) or ""
+            if "complete" in val and val.endswith("|1"):
+                ready = True
                 break
-        dlog("页面返回 %d 字节" % len(result or ""))
-        if not result:
+            if "complete" in val and time.time() > end - 8:
+                ready = True
+                break
+            time.sleep(0.4)
+        dlog("页面就绪=%s" % ready)
+        time.sleep(1.0)
+        data = None
+        result = ""
+        for attempt in range(3):
+            _ws_send(sock, {"id": 2, "method": "Runtime.evaluate", "params": {
+                "expression": DETAIL_JS.replace("__ID__", aid),
+                "awaitPromise": True, "returnByValue": True, "userGesture": True}})
+            result, end = "", time.time() + timeout
+            while time.time() < end:
+                msg = _ws_recv(sock)
+                if msg.get("id") == 2:
+                    result = (((msg.get("result") or {}).get("result") or {}).get("value")) or ""
+                    break
+            dlog("页面返回 %d 字节（第%d次）" % (len(result or ""), attempt + 1))
+            if not result:
+                time.sleep(2)
+                continue
+            try:
+                data = json.loads(result)
+            except Exception:
+                time.sleep(2)
+                continue
+            if data.get("ok") and data.get("play"):
+                break
+            if data.get("title"):
+                return data
+            dlog("抖音返回 %s，重试" % (data.get("code") or "空数据"))
+            time.sleep(2)
+        if not data:
             raise RuntimeError("页面没有返回数据")
-        data = json.loads(result)
         if not data.get("ok"):
             if data.get("title"):
                 return data
@@ -413,15 +446,27 @@ def resolve_douyin_cdp(exe, prof, video_url, port=9333, timeout=45):
     page = "https://www.douyin.com/video/" + aid
     dlog("开始解析抖音 %s → %s" % (video_url, aid))
     last = "未知错误"
-    for mode in ("headless", "window"):
+    attempts = [("headless", prof), ("window", prof)]
+    try:
+        import tempfile
+        fresh = os.path.join(tempfile.gettempdir(), "vd_dy_fresh")
         try:
-            data = _cdp_once(exe, prof, page, aid, timeout, mode)
-            dlog("解析成功: %s" % json.dumps({k: data.get(k) for k in ("title", "author", "dur")},
-                                            ensure_ascii=False)[:180])
+            if os.path.isdir(fresh):
+                shutil.rmtree(fresh, ignore_errors=True)
+        except Exception:
+            pass
+        attempts.append(("headless", fresh))
+    except Exception:
+        pass
+    for mode, p in attempts:
+        try:
+            data = _cdp_once(exe, p, page, aid, timeout, mode)
+            dlog("解析成功(%s/%s): %s" % (mode, os.path.basename(p), json.dumps(
+                {k: data.get(k) for k in ("title", "author", "dur")}, ensure_ascii=False)[:180]))
             return data
         except Exception as e:
             last = str(e)
-            dlog("解析失败(%s): %s" % (mode, last))
+            dlog("解析失败(%s %s): %s" % (mode, os.path.basename(p), last))
             time.sleep(1.0)
     raise RuntimeError(last)
 
