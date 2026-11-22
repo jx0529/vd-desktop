@@ -1,7 +1,6 @@
 {
- "versionCode": 17,
- "versionName": "1.9.7",
- "changes": "1. 更新包优先走高速 CDN，不死等 GitHub\n2. 下载改成 6 段并行，界面显示 MB/s\n3. 多线程失败自动退回单线程\n4. 抖音识别、单窗口登录保持不变",
- "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe",
- "urlCdn": "https://aka.doubaocdn.com/s/r5UB9itd4n"
+ "versionCode": 18,
+ "versionName": "1.9.8",
+ "changes": "1. 登录一次就记住，Cookie 存本机，重启/更新不用再登录\n2. 识别自动带登录态，抖音标题作者正常\n3. 更新进度显示剩余时间\n4. 更新失败可一键用浏览器下载\n5. CDN 优先 + 6 段并行下载\n6. 右侧滚动条改成深色，和背景一致",
+ "url": "https://github.com/jx0529/vd-desktop/releases/latest/download/VideoDownloader.exe"
 }
